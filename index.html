@@ -33,7 +33,6 @@
     text-shadow: 0 0 8px rgba(60,120,255,.7); pointer-events:none;
     font-variant-numeric: tabular-nums; opacity:.8; }
 
-  /* Миникарта */
   #minimap-wrap { position:fixed; right:18px; top:45px; z-index:60;
     width:140px; height:140px; border-radius:8px; border:1px solid rgba(140,90,255,.4);
     overflow:hidden; background:rgba(10,15,30,0.8); backdrop-filter:blur(4px);
@@ -46,11 +45,10 @@
 
   #fullscreen-map { position:fixed; inset:0; z-index:80;
     background:rgba(2,6,23,0.95); backdrop-filter:blur(6px);
-    display:flex; justify-content:center; align-items:center;
     touch-action:none; cursor:grab; }
   #fullscreen-map.hidden { display:none; }
   #fullscreen-map:active { cursor:grabbing; }
-  #fullscreen-canvas { width:100%; height:100%; pointer-events:none; }
+  #fullscreen-canvas { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; }
 
   #menu, #game-over { position:fixed; inset:0; z-index:50;
     display:grid; place-items:center; color:#e2e8f0;
@@ -82,7 +80,6 @@
   .checkbox-row input[type=checkbox] { width:18px; height:18px;
     accent-color:#8c5aff; cursor:pointer; }
 
-  /* Новые UI элементы */
   #bonus-modal { position:fixed; inset:0; z-index:85;
     display:grid; place-items:center; color:#e2e8f0;
     background:rgba(2,6,23,.85); backdrop-filter:blur(8px); }
@@ -98,8 +95,8 @@
 </head>
 <body>
 <div id="overlay">Управление наклоном телефона/мышкой
-Зажатие — меню
-Два тапа — обнулить наклон (текущее положение - нейтраль)
+Зажатие — Меню
+Два тапа — обнулить наклон (текущее положение = нейтраль)
 
 Нажми, чтобы начать игру</div>
 <div id="hud">5/5 HP</div>
@@ -202,9 +199,10 @@ const WALL_PAD_XZ = 0.02;
 const WALL_PAD_DOWN = 0.20;
 
 // --- Новые механики ---
-const ORB_DROP_CHANCE = 0.02; // 2% шанс дропа
-const SPECIAL_WALL_CHANCE = 0.005; // 0.5% шанс особой стены
+const ORB_DROP_CHANCE = 0.02;
+const SPECIAL_WALL_CHANCE = 0.005;
 const SPECIAL_WALL_RADIUS = 10;
+const SPECIAL_WALL_MIN_DIST = 3;
 
 let camHeight = CAM_HEIGHT_BASE;
 let fovDeg = FOV_DEG_BASE;
@@ -221,6 +219,7 @@ const destroyedWalls = new Set();
 const visitedCells = new Set();
 const tileNumCache = new Map();
 const specialWallCache = new Map();
+const specialWallFlagCache = new Map();
 let hp = INITIAL_HP;
 let score = 0;
 let scoreTimeout = null;
@@ -234,7 +233,6 @@ let invertX = false;
 let invertY = false;
 let shake = 0;
 
-// --- Inversion state ---
 let inversionCharges = 0;
 let isInverted = false;
 let invertFlash = 0;
@@ -261,7 +259,6 @@ minimapCanvas.height = minimapSize;
 minimapWrap.style.width = minimapSize + "px";
 minimapWrap.style.height = minimapSize + "px";
 
-// Fullscreen map state
 let mapOpen = false;
 let fullZoom = 1, fullPanX = 0, fullPanY = 0;
 const fullMapEl = document.getElementById("fullscreen-map");
@@ -499,26 +496,55 @@ function isSolidWithDestroyed(x, z) {
   if (destroyedWalls.has(`${x},${z}`)) return false;
   return isSolidRaw(x, z);
 }
+
+// Специальная стена — с проверкой, что рядом нет другой специальной.
+// Кэшируется, так как hashSeed/isSolidRaw не меняются между рестартами.
 function isSpecialWall(x, z) {
-  if (!isSolidRaw(x, z)) return false;
-  // Exclude spawn area just in case
-  if (Math.abs(x - SPAWN_CELL_X) < 3 && Math.abs(z - SPAWN_CELL_Z) < 3) return false;
-  return (hashSeed(x, z, (SEED ^ 0x5EED) >>> 0) & 1023) < 5; // ~0.5%
+  const key = `${x},${z}`;
+  let v = specialWallFlagCache.get(key);
+  if (v === undefined) {
+    v = computeIsSpecialWall(x, z);
+    specialWallFlagCache.set(key, v);
+  }
+  return v;
 }
+function computeIsSpecialWall(x, z) {
+  if (!isSolidRaw(x, z)) return false;
+  if (Math.abs(x - SPAWN_CELL_X) < 3 && Math.abs(z - SPAWN_CELL_Z) < 3) return false;
+  const h = hashSeed(x, z, (SEED ^ 0x5EED) >>> 0);
+  if ((h & 1023) >= 5) return false;
+  // Ищем конфликт в радиусе 3. Оставляем только ту, что "раньше" по сетке.
+  for (let dz = -SPECIAL_WALL_MIN_DIST; dz <= SPECIAL_WALL_MIN_DIST; dz++) {
+    for (let dx = -SPECIAL_WALL_MIN_DIST; dx <= SPECIAL_WALL_MIN_DIST; dx++) {
+      if (dx === 0 && dz === 0) continue;
+      const nx = x + dx, nz = z + dz;
+      if (!isSolidRaw(nx, nz)) continue;
+      const nh = hashSeed(nx, nz, (SEED ^ 0x5EED) >>> 0);
+      if ((nh & 1023) >= 5) continue;
+      if (nx < x || (nx === x && nz < z)) return false;
+    }
+  }
+  return true;
+}
+
+// Считаем мины в радиусе SPECIAL_WALL_RADIUS. Учитывает разрушенные стены.
 function getMinesNear(x, z) {
   const key = `${x},${z}`;
   if (specialWallCache.has(key)) return specialWallCache.get(key);
   let count = 0;
   for (let dz = -SPECIAL_WALL_RADIUS; dz <= SPECIAL_WALL_RADIUS; dz++) {
     for (let dx = -SPECIAL_WALL_RADIUS; dx <= SPECIAL_WALL_RADIUS; dx++) {
-      if (hasMineRaw(x + dx, z + dz)) count++;
+      const wx = x + dx, wz = z + dz;
+      if (destroyedWalls.has(`${wx},${wz}`)) continue;
+      if (hasMineRaw(wx, wz)) count++;
     }
   }
   specialWallCache.set(key, count);
   return count;
 }
+
 function hasMineRaw(x, z) {
-  if (isSpecialWall(x, z)) return false; // special walls don't have mines
+  if (isSpecialWall(x, z)) return false;
   const sdx = x - SPAWN_CELL_X;
   const sdz = z - SPAWN_CELL_Z;
   if (sdx * sdx + sdz * sdz <= SPAWN_MINE_SAFE_RADIUS_SQ) return false;
@@ -669,19 +695,32 @@ function addScore(amount) {
   }, 2000);
 }
 
+function updateChargeUI() {
+  const el = document.getElementById("charge-counter");
+  if (inversionCharges > 0) {
+    el.classList.remove("hidden");
+    el.textContent = `Inversions: ${inversionCharges}`;
+    el.classList.toggle("low", inversionCharges <= 3);
+  } else {
+    el.classList.add("hidden");
+  }
+}
+
 function breakWall(x, z) {
   const key = `${x},${z}`;
   if (destroyedWalls.has(key)) return;
-  
+
   if (isSpecialWall(x, z)) {
     const mineCount = getMinesNear(x, z);
-    if (mineCount > 0) return; // indestructible
+    if (mineCount > 0) return;
     destroyedWalls.add(key);
     addScore(1000);
     hp = Math.min(INITIAL_HP, hp + 1);
     updateHp();
     playExplosionSound();
     spawnBreakParticles(x, z, false, true);
+    // Специальная стена не мина, но пересчитаем кэш на всякий случай
+    specialWallCache.clear();
     return;
   }
 
@@ -698,10 +737,7 @@ function breakWall(x, z) {
   tileNumCache.delete(`${x+1},${z+1}`);
 
   const isMine = hasMineRaw(x, z);
-  
-  if (isMine) {
-    specialWallCache.clear();
-  }
+  if (isMine) specialWallCache.clear();
 
   if (isInverted) {
     if (isMine) {
@@ -709,8 +745,8 @@ function breakWall(x, z) {
       if (inversionCharges <= 0) {
         inversionCharges = 0;
         isInverted = false;
-        updateChargeUI();
       }
+      updateChargeUI();
       addScore(10);
       playExplosionSound();
       shake = Math.max(shake, 0.5);
@@ -755,12 +791,10 @@ function checkWallBreak() {
   for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
     const wx = cx + dx, wz = cz + dz;
     if (!isSolidWithDestroyed(wx, wz)) continue;
-    
     if (isSpecialWall(wx, wz)) {
       const count = getMinesNear(wx, wz);
-      if (count > 0) continue; // skip indestructible walls
+      if (count > 0) continue;
     }
-
     const nx = clamp(ball.x, wx*CELL, (wx+1)*CELL);
     const nz = clamp(ball.z, wz*CELL, (wz+1)*CELL);
     const ddx = ball.x - nx, ddz = ball.z - nz;
@@ -774,7 +808,7 @@ function checkWallBreak() {
 
 function stepBall(dt) {
   checkWallBreak();
-  
+
   for (let i = bonusOrbs.length - 1; i >= 0; i--) {
     const orb = bonusOrbs[i];
     orb.t += dt;
@@ -782,8 +816,8 @@ function stepBall(dt) {
       bonusOrbs.splice(i, 1);
       const charges = Math.floor(Math.random() * 21) + 10;
       inversionCharges += charges;
-      bonusModalOpen = true;
       updateChargeUI();
+      bonusModalOpen = true;
       playPickupSound();
       showBonusModal(charges);
     }
@@ -807,17 +841,6 @@ function stepBall(dt) {
   if (speed > 1e-4) {
     const axis = { x: ball.vz/speed, y: 0, z: -ball.vx/speed };
     ballRot = mulMat3(axisAngleMat3(axis, speed*dt/BALL_R), ballRot);
-  }
-}
-
-function updateChargeUI() {
-  const el = document.getElementById("charge-counter");
-  if (inversionCharges > 0) {
-    el.classList.remove("hidden");
-    el.textContent = `Inversions: ${inversionCharges}`;
-    el.classList.toggle("low", inversionCharges <= 3);
-  } else {
-    el.classList.add("hidden");
   }
 }
 
@@ -1270,7 +1293,7 @@ fn inBox(p: vec2<f32>, mn: vec2<f32>, mx: vec2<f32>) -> f32 {
   return 1.0 - smoothstep(0.0, 0.008, dist);
 }
 
-fn sevenSeg(uv: vec2<f32>, digit: i32) -> f32 {
+fn sevenSegAt(uv: vec2<f32>, digit: i32) -> f32 {
   let a = inBox(uv, vec2<f32>(0.20, 0.20), vec2<f32>(0.80, 0.30));
   let b = inBox(uv, vec2<f32>(0.70, 0.20), vec2<f32>(0.80, 0.50));
   let c = inBox(uv, vec2<f32>(0.70, 0.50), vec2<f32>(0.80, 0.80));
@@ -1293,6 +1316,22 @@ fn sevenSeg(uv: vec2<f32>, digit: i32) -> f32 {
     default: { m = 0.0; }
   }
   return m;
+}
+
+// Двузначное число: <10 — одна большая цифра, >=10 — две половинные
+fn sevenSegCount(uv: vec2<f32>, count: i32) -> f32 {
+  if (count < 10) {
+    return sevenSegAt(uv, count);
+  }
+  let tens = (count / 10) % 10;
+  let units = count % 10;
+  if (uv.x < 0.5) {
+    let uvTens = vec2<f32>(uv.x * 2.0, uv.y);
+    return sevenSegAt(uvTens, tens);
+  } else {
+    let uvUnits = vec2<f32>((uv.x - 0.5) * 2.0, uv.y);
+    return sevenSegAt(uvUnits, units);
+  }
 }
 
 fn digitColor(d: i32) -> vec3<f32> {
@@ -1352,14 +1391,14 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
     let thick = 2.0 * pow(cosV, 0.8);
     var absorbCol = vec3<f32>(1.6, 3.8, 1.1);
     if (G.invertState > 0.5) {
-        absorbCol = vec3<f32>(3.5, 1.0, 1.0); // поглощает красный, оставляет синий/голубой
+        absorbCol = vec3<f32>(3.5, 1.0, 1.0);
     }
     let absorb = exp(-thick * absorbCol);
     let refrDir = refract(-Vv, n, 1.0 / 1.5);
     let throughColor = envColor(refrDir * 0.6 + vec3<f32>(0.0, -0.5, 0.0), L);
     var trans = throughColor * absorb * 1.7;
     trans *= mix(1.0, 0.30, smoothstep(0.3, 0.95, cosV));
-    
+
     var innerGlow = vec3<f32>(0.30, 0.09, 0.68);
     if (G.invertState > 0.5) {
         innerGlow = vec3<f32>(0.0, 0.8, 1.0);
@@ -1378,7 +1417,6 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
     let sparkN = fbm2(i.local * 7.0 + Rm[0] * 4.0);
     col += vec3<f32>(0.9, 0.75, 1.0) * smoothstep(0.78, 0.96, sparkN) * rim * 0.6;
 
-    // Flash effect
     col += vec3<f32>(0.0, 1.0, 1.0) * G.invertFlash * 15.0;
   } else {
     let faceN = normalize(i.nrm);
@@ -1388,24 +1426,22 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
     var ao = 1.0;
 
     if (matType > 1.5) {
-      // Special Wall
       let count = i32(i.matW.z + 0.5);
       let isTop = step(0.99, faceN.y);
-      let digit = count % 10;
-      let m = sevenSeg(i.local.xz, digit) * isTop;
 
-      var baseCol = vec3<f32>(0.3, 0.1, 0.1); // dark red
-      var glowCol = vec3<f32>(1.0, 0.2, 0.2);  // red glow
-
+      var baseCol = vec3<f32>(0.3, 0.1, 0.1);
+      var glowCol = vec3<f32>(1.0, 0.2, 0.2);
       if (count == 0) {
         baseCol = vec3<f32>(0.1, 0.3, 0.1);
         glowCol = vec3<f32>(0.2, 1.0, 0.2);
       }
 
+      // Цифра: до 2 разрядов
+      let m = sevenSegCount(i.local.xz, count) * isTop;
+
       let pulse = 0.8 + 0.2 * sin(i.wpos.x * 2.0 + i.wpos.z * 3.0 + G.camPos.x);
       col = baseCol * (0.5 + 0.5 * max(dot(faceN, L), 0.0)) + glowCol * m * 2.0 * pulse;
 
-      // Rim light
       let rim = pow(1.0 - max(dot(faceN, Vv), 0.0), 3.0);
       col += glowCol * rim * 0.5;
     } else if (matType > 0.5) {
@@ -1443,7 +1479,7 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
       var digitCol = vec3<f32>(0.0);
       var digitMask = 0.0;
       if (digit > 0 && digit <= 9) {
-        digitMask = sevenSeg(luv, digit);
+        digitMask = sevenSegAt(luv, digit);
         digitCol = digitColor(digit);
         albedo = mix(albedo, digitCol * 0.45, digitMask * 0.9);
         let duv = luv - vec2<f32>(0.5);
@@ -1582,7 +1618,7 @@ function buildInstances(worldX, worldZ){
         const count = getMinesNear(x, z);
         pushInst(x*CELL - WALL_PAD_XZ, -WALL_PAD_DOWN, z*CELL - WALL_PAD_XZ,
                  CELL + 2*WALL_PAD_XZ, WALL_H + WALL_PAD_DOWN, CELL + 2*WALL_PAD_XZ,
-                 2, rnd, count); // matType 2 = special wall
+                 2, rnd, count);
       } else {
         pushInst(x*CELL - WALL_PAD_XZ, -WALL_PAD_DOWN, z*CELL - WALL_PAD_XZ,
                  CELL + 2*WALL_PAD_XZ, WALL_H + WALL_PAD_DOWN, CELL + 2*WALL_PAD_XZ,
@@ -1604,6 +1640,7 @@ let particleCount = 0;
 function buildParticleInstances() {
   particleCount = 0;
   for (const p of particles) {
+    if (particleCount >= MAX_PARTICLES) break;
     const t = p.life / p.maxLife;
     const sz = p.size * (0.4 + 0.6 * t);
     const o = particleCount * 12;
@@ -1621,8 +1658,6 @@ function buildParticleInstances() {
     particleData[o+11] = t;
     particleCount++;
   }
-  
-  // Рендерим бонусные сферы как светящиеся частицы
   for (const orb of bonusOrbs) {
     if (particleCount >= MAX_PARTICLES) break;
     const pulse = 0.6 + 0.4 * Math.sin(orb.t * 5.0);
@@ -1876,6 +1911,7 @@ function restart() {
   visitedCells.clear();
   tileNumCache.clear();
   specialWallCache.clear();
+  specialWallFlagCache.clear();
   particles.length = 0;
   bonusOrbs.length = 0;
   shake = 0;
@@ -1884,6 +1920,7 @@ function restart() {
   gameOver = false;
   inversionCharges = 0;
   isInverted = false;
+  invertFlash = 0;
   updateChargeUI();
   ball.x = CELL * (SPAWN_CELL_X + 0.5);
   ball.z = CELL * (SPAWN_CELL_Z + 0.5);
@@ -1914,7 +1951,7 @@ overlay.addEventListener("click", ()=>{
   }).catch(()=>hideOverlay());
 });
 
-// Long-press → menu, double-tap → recalibrate tilt
+// Long-press → menu, double-tap → recalibrate tilt, single tap → toggle invert
 let pressTimer = null, pressActive = false, pressFired = false;
 let lastTapTime = 0;
 
@@ -1946,11 +1983,10 @@ canvas.addEventListener("pointerup", () => {
     isInverted = !isInverted;
     invertFlash = 1.0;
     playToggleSound();
-    // Спавним искры при переключении
     for (let i = 0; i < 20; i++) {
       const ang = Math.random() * Math.PI * 2;
       const spd = 2 + Math.random() * 5;
-      spawnParticle(ball.x, ball.y + BALL_R, ball.z, Math.cos(ang) * spd, Math.random() * 5, Math.sin(ang) * spd, 0.1, 0.0, 1.0, 1.0, 0.6);
+      spawnParticle(ball.x, BALL_R, ball.z, Math.cos(ang) * spd, Math.random() * 5, Math.sin(ang) * spd, 0.1, 0.0, 1.0, 1.0, 0.6);
     }
   } else {
     const now = performance.now();
@@ -1994,6 +2030,7 @@ document.getElementById("minimap-chk").addEventListener("change", (e) => {
 });
 
 updateHp(false);
+updateChargeUI();
 
 // ===========================================================================
 //  Minimap Interaction
@@ -2033,14 +2070,14 @@ minimapWrap.addEventListener("pointermove", e => {
 
 minimapWrap.addEventListener("pointerup", e => {
   isDraggingMinimap = false;
-  minimapWrap.releasePointerCapture(e.pointerId);
+  try { minimapWrap.releasePointerCapture(e.pointerId); } catch(_) {}
   if (!dragMoved) {
     openFullscreenMap();
   }
 });
 minimapWrap.addEventListener("pointercancel", e => {
   isDraggingMinimap = false;
-  minimapWrap.releasePointerCapture(e.pointerId);
+  try { minimapWrap.releasePointerCapture(e.pointerId); } catch(_) {}
 });
 
 minimapGrip.addEventListener("pointerdown", e => {
@@ -2069,16 +2106,20 @@ minimapGrip.addEventListener("pointermove", e => {
 
 minimapGrip.addEventListener("pointerup", e => {
   isResizingMinimap = false;
-  minimapGrip.releasePointerCapture(e.pointerId);
+  try { minimapGrip.releasePointerCapture(e.pointerId); } catch(_) {}
 });
 
 // ===========================================================================
 //  Fullscreen map interactions
+//  ОБЪЯВЛЕНИЯ ПЕРЕМЕННЫХ — БЕЗ НИХ В STRICT MODE ОБРАБОТЧИКИ ПАДАЮТ.
 // ===========================================================================
-const fullMapPointers = new Map();
+let isPanning = false;
+let lastPanX = 0, lastPanY = 0;
+let touchDist = 0;
 let fullMapDragDist = 0;
 let fullMapTapStart = 0;
 let fullMapTapX = 0, fullMapTapY = 0;
+const fullMapPointers = new Map();
 
 fullMapEl.addEventListener("pointerdown", e => {
   fullMapPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -2095,7 +2136,6 @@ fullMapEl.addEventListener("pointerdown", e => {
     const pts = [...fullMapPointers.values()];
     touchDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
   }
-  fullMapEl.setPointerCapture(e.pointerId);
 });
 
 fullMapEl.addEventListener("pointermove", e => {
@@ -2135,7 +2175,6 @@ fullMapEl.addEventListener("pointerup", e => {
     isPanning = false;
     touchDist = 0;
   }
-  fullMapEl.releasePointerCapture(e.pointerId);
 });
 
 fullMapEl.addEventListener("pointercancel", e => {
@@ -2144,7 +2183,6 @@ fullMapEl.addEventListener("pointercancel", e => {
     isPanning = false;
     touchDist = 0;
   }
-  fullMapEl.releasePointerCapture(e.pointerId);
 });
 
 fullMapEl.addEventListener("wheel", e => {
@@ -2179,12 +2217,14 @@ function frame(now){
   updateFps(dt);
   updateHpVisibility();
 
-  // Пауза, если открыта карта, меню, game over или бонус
   const active = !overlayVisible && !menuVisible && !gameOver && !mapOpen && !bonusModalOpen;
   if (active) {
     stepBall(dt);
     updateParticles(dt);
     if (invertFlash > 0) invertFlash = Math.max(0, invertFlash - dt * 4);
+  } else {
+    // даже в паузе пусть бонусные орбы медленно пульсируют
+    for (const orb of bonusOrbs) orb.t += dt * 0.3;
   }
 
   if (shake > 0.01) shake *= Math.exp(-6 * dt);
