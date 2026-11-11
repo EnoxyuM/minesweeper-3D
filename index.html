@@ -21,14 +21,14 @@
     opacity:0; transition: opacity 0.3s ease; }
   #hud.low { color:#ff8090; text-shadow: 0 0 10px rgba(255,80,120,.9); }
 
-  #score { position:fixed; top:60px; left:18px;
+  #score { position:fixed; bottom:24px; left:50%; top:auto;
     z-index:60; color:#e2e8f0; font-size:32px; font-weight:800;
     text-shadow: 0 0 15px rgba(140,90,255,1), 0 0 30px rgba(80,40,180,.8);
     pointer-events:none; opacity:0;
-    transform:translateY(-10px);
+    transform:translateX(-50%) translateY(10px);
     transition: opacity 0.3s ease, transform 0.3s ease;
     font-variant-numeric: tabular-nums; }
-  #score.visible { opacity:1; transform:translateY(0); }
+  #score.visible { opacity:1; transform:translateX(-50%) translateY(0); }
 
   #fps { position:fixed; top:18px; right:18px; z-index:60;
     color:#a0c8ff; font-size:15px; font-weight:600;
@@ -86,7 +86,7 @@
     display:grid; place-items:center; color:#e2e8f0;
     background:rgba(2,6,23,.85); backdrop-filter:blur(8px); }
   #bonus-modal.hidden { display:none; }
-  #charge-counter { position:fixed; bottom:18px; right:18px; z-index:60;
+  #charge-counter { position:fixed; bottom:24px; right:18px; z-index:60;
     color:#00d4ff; font-size:24px; font-weight:800;
     text-shadow: 0 0 12px rgba(0,200,255,0.9), 0 0 20px rgba(0,100,255,0.5);
     pointer-events:none; font-variant-numeric: tabular-nums;
@@ -180,6 +180,7 @@ const SPAWN_CELL_Z = 1;
 const WALL_TEX_SIZE = 64;
 const WALL_TEX_HALF = WALL_TEX_SIZE / 2;
 const MAX_PARTICLES = 512;
+const MAX_CRYSTALS = 16;
 
 const SPAWN_CLEAR_RADIUS_SQ = 12.25;
 const SPAWN_MINE_SAFE_RADIUS_SQ = 25;
@@ -231,7 +232,8 @@ const specialWallCache = new Map();
 const specialWallFlagCache = new Map();
 let hp = INITIAL_HP;
 let score = 0;
-let scoreTimeout = null;
+let scoreVisibleUntil = 0;
+let scoreCurrentlyVisible = false;
 let hpVisibleUntil = 0;
 let hpCurrentlyVisible = false;
 let gameOver = false;
@@ -546,6 +548,16 @@ function getMinesNear(x, z) {
   return count;
 }
 
+function getInitialMinesNear(x, z) {
+  let count = 0;
+  for (let dz = -SPECIAL_WALL_RADIUS; dz <= SPECIAL_WALL_RADIUS; dz++) {
+    for (let dx = -SPECIAL_WALL_RADIUS; dx <= SPECIAL_WALL_RADIUS; dx++) {
+      if (hasMineRaw(x + dx, z + dz)) count++;
+    }
+  }
+  return count;
+}
+
 function hasMineRaw(x, z) {
   if (isSpecialWall(x, z)) return false;
   const sdx = x - SPAWN_CELL_X;
@@ -582,6 +594,62 @@ function tileNumberCached(x, z) {
     tileNumCache.set(key, v);
   }
   return v;
+}
+
+// ===========================================================================
+//  Floating UI Text
+// ===========================================================================
+function showFloatingText(wx, wy, wz, text, color) {
+  const aspect = canvas.width / canvas.height;
+  const eye = { x: ball.x, y: BALL_R + camHeight, z: ball.z + CAM_BACK };
+  const target = { x: ball.x, y: BALL_R, z: ball.z };
+  const { v, p } = buildViewProj(eye, target, aspect);
+  
+  const viewVec = [
+    v[0]*wx + v[4]*wy + v[8]*wz + v[12],
+    v[1]*wx + v[5]*wy + v[9]*wz + v[13],
+    v[2]*wx + v[6]*wy + v[10]*wz + v[14],
+    v[3]*wx + v[7]*wy + v[11]*wz + v[15]
+  ];
+  const projVec = [
+    p[0]*viewVec[0] + p[4]*viewVec[1] + p[8]*viewVec[2] + p[12]*viewVec[3],
+    p[1]*viewVec[0] + p[5]*viewVec[1] + p[9]*viewVec[2] + p[13]*viewVec[3],
+    p[2]*viewVec[0] + p[6]*viewVec[1] + p[10]*viewVec[2] + p[14]*viewVec[3],
+    p[3]*viewVec[0] + p[7]*viewVec[1] + p[11]*viewVec[2] + p[15]*viewVec[3]
+  ];
+  
+  if (projVec[3] <= 0) return;
+  
+  const ndcX = projVec[0] / projVec[3];
+  const ndcY = projVec[1] / projVec[3];
+  
+  const screenX = (ndcX * 0.5 + 0.5) * window.innerWidth;
+  const screenY = (-ndcY * 0.5 + 0.5) * window.innerHeight;
+  
+  const el = document.createElement("div");
+  el.textContent = text;
+  el.style.position = "fixed";
+  el.style.left = screenX + "px";
+  el.style.top = screenY + "px";
+  el.style.color = color;
+  el.style.fontSize = "26px";
+  el.style.fontWeight = "800";
+  el.style.fontFamily = "system-ui, -apple-system, sans-serif";
+  el.style.textShadow = `0 0 10px ${color}, 0 0 20px ${color}`;
+  el.style.pointerEvents = "none";
+  el.style.zIndex = "70";
+  el.style.transform = "translate(-50%, -50%)";
+  el.style.transition = "transform 5s ease-out, opacity 5s ease-out";
+  
+  document.body.appendChild(el);
+  
+  // trigger reflow
+  el.offsetHeight;
+  
+  el.style.transform = "translate(-50%, -200%)";
+  el.style.opacity = "0";
+  
+  setTimeout(() => el.remove(), 5000);
 }
 
 // ===========================================================================
@@ -689,13 +757,8 @@ function collidesAt(bx, bz) {
 
 function addScore(amount) {
   score += amount;
-  const el = document.getElementById("score");
-  el.textContent = score;
-  el.classList.add("visible");
-  clearTimeout(scoreTimeout);
-  scoreTimeout = setTimeout(() => {
-    el.classList.remove("visible");
-  }, 2000);
+  document.getElementById("score").textContent = score;
+  scoreVisibleUntil = performance.now() + 2000;
 }
 
 function updateChargeUI() {
@@ -717,11 +780,23 @@ function breakWall(x, z) {
     const mineCount = getMinesNear(x, z);
     if (mineCount > 0) return;
     destroyedWalls.add(key);
-    addScore(1000);
+    
+    const initialMines = getInitialMinesNear(x, z);
+    const scoreGain = initialMines * 30;
+    
+    addScore(scoreGain);
     hp = Math.min(INITIAL_HP, hp + 1);
     updateHp();
     playExplosionSound();
     spawnBreakParticles(x, z, false, true);
+    
+    const wx = (x + 0.5) * CELL;
+    const wy = WALL_H + 0.5;
+    const wz = (z + 0.5) * CELL;
+    
+    showFloatingText(wx, wy, wz, "+1 HP", "#30ff70");
+    showFloatingText(wx, wy - 0.5, wz, "+" + scoreGain + " Score", "#ffd700");
+    
     specialWallCache.clear();
     return;
   }
@@ -1241,6 +1316,33 @@ fn vs_particle(
   return o;
 }
 
+@vertex
+fn vs_crystal(
+  @location(0) cp : vec3<f32>,
+  @location(1) cn : vec3<f32>,
+  @location(2) ip : vec4<f32>,
+  @location(3) is : vec4<f32>,
+  @location(4) ic : vec4<f32>
+) -> VOut {
+  var o : VOut;
+  let phase = ic.w * 6.2831853;
+  let ang = G.time * 2.5 + phase;
+  let s = sin(ang);
+  let c = cos(ang);
+  let rp = vec3<f32>(cp.x * c + cp.z * s, cp.y, -cp.x * s + cp.z * c);
+  let rn = vec3<f32>(cn.x * c + cn.z * s, cn.y, -cn.x * s + cn.z * c);
+  let w = ip.xyz + rp * is.xyz;
+  o.wpos = w;
+  o.nrm  = rn;
+  o.matW = ic;
+  o.local = cp;
+  o.kind = 3.0;
+  o.isz  = is.xyz;
+  o.pos  = G.proj * (G.view * vec4<f32>(w, 1.0));
+  o.ndc  = o.pos.xy / o.pos.w;
+  return o;
+}
+
 fn hash31(p: vec3<f32>) -> f32 {
   var q = fract(p * 0.3183099 + vec3<f32>(0.11, 0.17, 0.13));
   q = q * (q + 33.33);
@@ -1435,7 +1537,25 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
   var col : vec3<f32>;
   var glow : vec3<f32> = vec3<f32>(0.0);
 
-  if (i.kind > 1.5) {
+  if (i.kind > 2.5) {
+    // CRYSTAL
+    let n = normalize(i.nrm);
+    let ndl = max(dot(n, L), 0.0);
+    let fres = pow(1.0 - max(dot(n, Vv), 0.0), 2.0);
+
+    let baseCol = vec3<f32>(0.1, 0.75, 1.0);
+    let rimCol = vec3<f32>(0.7, 0.95, 1.0);
+
+    let pulse = 0.85 + 0.15 * sin(G.time * 4.0);
+    let facetVar = 0.7 + 0.3 * sin(i.local.y * 10.0 + i.local.x * 5.0 + G.time * 3.0);
+
+    var cc = baseCol * (0.6 + 0.6 * ndl) * facetVar * pulse;
+    cc += rimCol * fres * 3.0 * pulse;
+    cc += baseCol * 0.5;
+
+    cc = mix(vec3<f32>(0.0), cc, fogF);
+    return vec4<f32>(cc, 1.0);
+  } else if (i.kind > 1.5) {
     let t = i.matW.a;
     let c = i.matW.rgb;
     let n = normalize(i.nrm);
@@ -1647,6 +1767,49 @@ device.queue.writeBuffer(cubeIdxBuf, 0, cube.i);
 const cubeIdxCount = cube.i.length;
 
 // ===========================================================================
+//  Crystal geometry
+// ===========================================================================
+function buildCrystal() {
+  const H = 0.7, W = 0.35;
+  const V = [
+    [0, H, 0],
+    [0, -H, 0],
+    [W, 0, 0],
+    [-W, 0, 0],
+    [0, 0, W],
+    [0, 0, -W],
+  ];
+  const faces = [
+    [0, 4, 2], [0, 3, 4], [0, 5, 3], [0, 2, 5],
+    [1, 2, 4], [1, 4, 3], [1, 3, 5], [1, 5, 2],
+  ];
+  const verts = [];
+  const idx = [];
+  for (const f of faces) {
+    const va = V[f[0]], vb = V[f[1]], vc = V[f[2]];
+    const ax = vb[0]-va[0], ay = vb[1]-va[1], az = vb[2]-va[2];
+    const bx = vc[0]-va[0], by = vc[1]-va[1], bz = vc[2]-va[2];
+    let nx = ay*bz - az*by;
+    let ny = az*bx - ax*bz;
+    let nz = ax*by - ay*bx;
+    const nl = Math.hypot(nx, ny, nz) || 1;
+    nx /= nl; ny /= nl; nz /= nl;
+    const base = verts.length / 6;
+    verts.push(va[0], va[1], va[2], nx, ny, nz);
+    verts.push(vb[0], vb[1], vb[2], nx, ny, nz);
+    verts.push(vc[0], vc[1], vc[2], nx, ny, nz);
+    idx.push(base, base+1, base+2);
+  }
+  return { v: new Float32Array(verts), i: new Uint16Array(idx) };
+}
+const crystal = buildCrystal();
+const crystalBuf = device.createBuffer({ size: crystal.v.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+device.queue.writeBuffer(crystalBuf, 0, crystal.v);
+const crystalIdxBuf = device.createBuffer({ size: crystal.i.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
+device.queue.writeBuffer(crystalIdxBuf, 0, crystal.i);
+const crystalIdxCount = crystal.i.length;
+
+// ===========================================================================
 //  Sphere
 // ===========================================================================
 function makeSphere(slats, slons) {
@@ -1740,24 +1903,33 @@ function buildParticleInstances() {
     particleData[o+11] = t;
     particleCount++;
   }
+}
+
+// ===========================================================================
+//  Crystal instance buffer
+// ===========================================================================
+const crystalInstBuf = device.createBuffer({ size: MAX_CRYSTALS*48, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+const crystalInstData = new Float32Array(MAX_CRYSTALS*12);
+let crystalCount = 0;
+function buildCrystalInstances() {
+  crystalCount = 0;
   for (const orb of bonusOrbs) {
-    if (particleCount >= MAX_PARTICLES) break;
-    const pulse = 0.6 + 0.4 * Math.sin(orb.t * 5.0);
-    const sz = 0.8 * pulse;
-    const o = particleCount * 12;
-    particleData[o+0] = orb.x - sz * 0.5;
-    particleData[o+1] = 0.5 - sz * 0.5 + Math.sin(orb.t * 3.0) * 0.2;
-    particleData[o+2] = orb.z - sz * 0.5;
-    particleData[o+3] = 0;
-    particleData[o+4] = sz;
-    particleData[o+5] = sz;
-    particleData[o+6] = sz;
-    particleData[o+7] = 0;
-    particleData[o+8] = 0.2;
-    particleData[o+9] = 0.8;
-    particleData[o+10] = 1.0;
-    particleData[o+11] = 1.0;
-    particleCount++;
+    if (crystalCount >= MAX_CRYSTALS) break;
+    const o = crystalCount * 12;
+    const pulse = 1.0 + 0.1 * Math.sin(orb.t * 3.0);
+    crystalInstData[o+0] = orb.x;
+    crystalInstData[o+1] = 0.9;
+    crystalInstData[o+2] = orb.z;
+    crystalInstData[o+3] = 0;
+    crystalInstData[o+4] = pulse;
+    crystalInstData[o+5] = pulse;
+    crystalInstData[o+6] = pulse;
+    crystalInstData[o+7] = 0;
+    crystalInstData[o+8] = 0.0;
+    crystalInstData[o+9] = 0.0;
+    crystalInstData[o+10] = 0.0;
+    crystalInstData[o+11] = orb.t * 0.5;
+    crystalCount++;
   }
 }
 
@@ -1807,6 +1979,14 @@ const mazePipeline = device.createRenderPipeline({
 const ballPipeline = device.createRenderPipeline({
   layout: device.createPipelineLayout({ bindGroupLayouts:[globalsBGL] }),
   vertex: { module:shaderModule, entryPoint:"vs_ball", buffers:[ vertexBufs[0] ] },
+  fragment: { module:shaderModule, entryPoint:"fs_main", targets:[{ format }] },
+  primitive: { topology:"triangle-list", cullMode:"none" },
+  multisample: { count: MSAA },
+  depthStencil: { depthWriteEnabled:true, depthCompare:"less", format:"depth24plus" }
+});
+const crystalPipeline = device.createRenderPipeline({
+  layout: device.createPipelineLayout({ bindGroupLayouts:[globalsBGL] }),
+  vertex: { module:shaderModule, entryPoint:"vs_crystal", buffers: vertexBufs },
   fragment: { module:shaderModule, entryPoint:"fs_main", targets:[{ format }] },
   primitive: { topology:"triangle-list", cullMode:"none" },
   multisample: { count: MSAA },
@@ -1970,6 +2150,14 @@ function updateHpVisibility() {
     hpEl.style.opacity = shouldShow ? "1" : "0";
   }
 }
+function updateScoreVisibility() {
+  const now = performance.now();
+  const shouldShow = menuVisible || now < scoreVisibleUntil;
+  if (shouldShow !== scoreCurrentlyVisible) {
+    scoreCurrentlyVisible = shouldShow;
+    document.getElementById("score").classList.toggle("visible", shouldShow);
+  }
+}
 
 function openMenu() {
   if (overlayVisible) return;
@@ -1995,6 +2183,8 @@ function restart() {
   shake = 0;
   hp = INITIAL_HP;
   score = 0;
+  scoreVisibleUntil = 0;
+  scoreCurrentlyVisible = false;
   gameOver = false;
   inversionCharges = 0;
   isInverted = false;
@@ -2277,6 +2467,7 @@ function frame(now){
 
   updateFps(dt);
   updateHpVisibility();
+  updateScoreVisibility();
 
   const active = !overlayVisible && !menuVisible && !gameOver && !mapOpen && !bonusModalOpen;
   if (active) {
@@ -2326,6 +2517,11 @@ function frame(now){
     device.queue.writeBuffer(particleBuf,0,particleData.subarray(0,particleCount*12));
   }
 
+  buildCrystalInstances();
+  if (crystalCount > 0) {
+    device.queue.writeBuffer(crystalInstBuf, 0, crystalInstData.subarray(0, crystalCount*12));
+  }
+
   const enc=device.createCommandEncoder();
   const pass=enc.beginRenderPass({
     colorAttachments:[{
@@ -2352,6 +2548,15 @@ function frame(now){
   pass.setVertexBuffer(0,sphereBuf);
   pass.setIndexBuffer(sphereIdxBuf,"uint16");
   pass.drawIndexed(sphereIdxCount, 1, 0, 0, 0);
+
+  if (crystalCount > 0) {
+    pass.setPipeline(crystalPipeline);
+    pass.setBindGroup(0,globalsBG);
+    pass.setVertexBuffer(0,crystalBuf);
+    pass.setVertexBuffer(1,crystalInstBuf);
+    pass.setIndexBuffer(crystalIdxBuf,"uint16");
+    pass.drawIndexed(crystalIdxCount, crystalCount, 0, 0, 0);
+  }
 
   if (particleCount > 0) {
     pass.setPipeline(particlePipeline);
