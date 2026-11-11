@@ -21,12 +21,14 @@
     opacity:0; transition: opacity 0.3s ease; }
   #hud.low { color:#ff8090; text-shadow: 0 0 10px rgba(255,80,120,.9); }
 
-  #score { position:fixed; top:18px; left:50%; transform:translateX(-50%) translateY(-10px);
+  #score { position:fixed; top:60px; left:18px;
     z-index:60; color:#e2e8f0; font-size:32px; font-weight:800;
     text-shadow: 0 0 15px rgba(140,90,255,1), 0 0 30px rgba(80,40,180,.8);
     pointer-events:none; opacity:0;
-    transition: opacity 0.3s ease, transform 0.3s ease; }
-  #score.visible { opacity:1; transform:translateX(-50%) translateY(0); }
+    transform:translateY(-10px);
+    transition: opacity 0.3s ease, transform 0.3s ease;
+    font-variant-numeric: tabular-nums; }
+  #score.visible { opacity:1; transform:translateY(0); }
 
   #fps { position:fixed; top:18px; right:18px; z-index:60;
     color:#a0c8ff; font-size:15px; font-weight:600;
@@ -85,11 +87,11 @@
     background:rgba(2,6,23,.85); backdrop-filter:blur(8px); }
   #bonus-modal.hidden { display:none; }
   #charge-counter { position:fixed; bottom:18px; right:18px; z-index:60;
-    color:#a0c8ff; font-size:20px; font-weight:700;
-    text-shadow: 0 0 10px rgba(60,120,255,0.8);
+    color:#00d4ff; font-size:24px; font-weight:800;
+    text-shadow: 0 0 12px rgba(0,200,255,0.9), 0 0 20px rgba(0,100,255,0.5);
     pointer-events:none; font-variant-numeric: tabular-nums;
     opacity:1; transition: opacity 0.3s; }
-  #charge-counter.low { color:#ff4060; text-shadow: 0 0 10px rgba(255,0,60,0.9); }
+  #charge-counter.low { color:#ff4060; text-shadow: 0 0 12px rgba(255,0,60,1); }
   #charge-counter.hidden { display:none; }
 </style>
 </head>
@@ -102,7 +104,7 @@
 <div id="hud">5/5 HP</div>
 <div id="score">0</div>
 <div id="fps">— FPS</div>
-<div id="charge-counter" class="hidden">Inversions: 0</div>
+<div id="charge-counter" class="hidden">0</div>
 <canvas id="canvas"></canvas>
 
 <div id="minimap-wrap">
@@ -186,7 +188,6 @@ const DOUBLE_TAP_MS = 300;
 const MIN_DEAD_DEG = 1.5;
 const DEAD_FRAC = 0.24;
 
-// --- Камера ---
 const CAM_HEIGHT_BASE = 22.0;
 const CAM_HEIGHT_TOUCH = 28.0;
 const CAM_BACK = 0.0;
@@ -194,21 +195,29 @@ const FOV_DEG_BASE = 55;
 const FOV_DEG_MAX = 80;
 const MIN_HORIZ_CELLS = 4.5;
 
-// --- Фикс шиноби-бага ---
 const WALL_PAD_XZ = 0.02;
 const WALL_PAD_DOWN = 0.20;
 
-// --- Новые механики ---
 const ORB_DROP_CHANCE = 0.02;
 const SPECIAL_WALL_CHANCE = 0.005;
 const SPECIAL_WALL_RADIUS = 10;
 const SPECIAL_WALL_MIN_DIST = 3;
 
+const BIOME_PALETTE = [
+  [239,  80,  32],
+  [ 48, 223, 159],
+  [175,  48, 239],
+  [239, 207,  64],
+  [ 16, 159, 239],
+  [239,  32, 112],
+  [112, 191,  32],
+  [143,  32, 207],
+];
+
 let camHeight = CAM_HEIGHT_BASE;
 let fovDeg = FOV_DEG_BASE;
 let isTouchPrimary = false;
 try { isTouchPrimary = window.matchMedia('(pointer: coarse)').matches; } catch(e) {}
-
 if (!isTouchPrimary) document.body.classList.add('desktop');
 
 // ===========================================================================
@@ -232,12 +241,14 @@ let sensY = 15.0;
 let invertX = false;
 let invertY = false;
 let shake = 0;
+let globalTime = 0;
 
 let inversionCharges = 0;
 let isInverted = false;
 let invertFlash = 0;
 let bonusModalOpen = false;
 let bonusOrbs = [];
+let firstBonusShown = false;
 
 // ===========================================================================
 //  Minimap state
@@ -269,7 +280,6 @@ function resizeFullscreenCanvas() {
   fullCanvas.width = window.innerWidth;
   fullCanvas.height = window.innerHeight;
 }
-
 function openFullscreenMap() {
   mapOpen = true;
   fullMapEl.classList.remove("hidden");
@@ -282,7 +292,6 @@ function closeFullscreenMap() {
   fullMapEl.classList.add("hidden");
   requestWakeLock();
 }
-
 window.addEventListener("resize", () => {
   if (mapOpen) resizeFullscreenCanvas();
 });
@@ -297,9 +306,7 @@ async function requestWakeLock() {
   try {
     wakeLock = await navigator.wakeLock.request("screen");
     wakeLock.addEventListener("release", () => { wakeLock = null; });
-  } catch (err) {
-    wakeLock = null;
-  }
+  } catch (err) { wakeLock = null; }
 }
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible" && !overlayVisible && !menuVisible && !mapOpen && !bonusModalOpen) {
@@ -497,8 +504,6 @@ function isSolidWithDestroyed(x, z) {
   return isSolidRaw(x, z);
 }
 
-// Специальная стена — с проверкой, что рядом нет другой специальной.
-// Кэшируется, так как hashSeed/isSolidRaw не меняются между рестартами.
 function isSpecialWall(x, z) {
   const key = `${x},${z}`;
   let v = specialWallFlagCache.get(key);
@@ -513,7 +518,6 @@ function computeIsSpecialWall(x, z) {
   if (Math.abs(x - SPAWN_CELL_X) < 3 && Math.abs(z - SPAWN_CELL_Z) < 3) return false;
   const h = hashSeed(x, z, (SEED ^ 0x5EED) >>> 0);
   if ((h & 1023) >= 5) return false;
-  // Ищем конфликт в радиусе 3. Оставляем только ту, что "раньше" по сетке.
   for (let dz = -SPECIAL_WALL_MIN_DIST; dz <= SPECIAL_WALL_MIN_DIST; dz++) {
     for (let dx = -SPECIAL_WALL_MIN_DIST; dx <= SPECIAL_WALL_MIN_DIST; dx++) {
       if (dx === 0 && dz === 0) continue;
@@ -527,7 +531,6 @@ function computeIsSpecialWall(x, z) {
   return true;
 }
 
-// Считаем мины в радиусе SPECIAL_WALL_RADIUS. Учитывает разрушенные стены.
 function getMinesNear(x, z) {
   const key = `${x},${z}`;
   if (specialWallCache.has(key)) return specialWallCache.get(key);
@@ -699,7 +702,7 @@ function updateChargeUI() {
   const el = document.getElementById("charge-counter");
   if (inversionCharges > 0) {
     el.classList.remove("hidden");
-    el.textContent = `Inversions: ${inversionCharges}`;
+    el.textContent = inversionCharges;
     el.classList.toggle("low", inversionCharges <= 3);
   } else {
     el.classList.add("hidden");
@@ -719,7 +722,6 @@ function breakWall(x, z) {
     updateHp();
     playExplosionSound();
     spawnBreakParticles(x, z, false, true);
-    // Специальная стена не мина, но пересчитаем кэш на всякий случай
     specialWallCache.clear();
     return;
   }
@@ -817,9 +819,12 @@ function stepBall(dt) {
       const charges = Math.floor(Math.random() * 21) + 10;
       inversionCharges += charges;
       updateChargeUI();
-      bonusModalOpen = true;
       playPickupSound();
-      showBonusModal(charges);
+      if (!firstBonusShown) {
+        firstBonusShown = true;
+        bonusModalOpen = true;
+        showBonusModal(charges);
+      }
     }
   }
 
@@ -925,7 +930,6 @@ function sensorTilt(){
   const sy=clamp( v.y*sensorState.baseTargetZ,-1,1);
   return { tx: Math.asin(sx)*180/Math.PI, ty: Math.asin(sy)*180/Math.PI };
 }
-
 function recalibrateTilt() {
   if (!sensorState.hasAccel) return;
   const c = norm3(sensorState.accel);
@@ -937,7 +941,6 @@ function recalibrateTilt() {
   ball.vx = 0;
   ball.vz = 0;
 }
-
 const mouse={x:0,y:0,active:false};
 window.addEventListener("mousemove", e=>{
   mouse.x=(e.clientX/window.innerWidth -0.5)*2;
@@ -956,7 +959,6 @@ function limitTiltMag(tx, ty) {
   }
   return { tx, ty };
 }
-
 function applyPhysicalDeadZone(tx, ty, dead) {
   const m = Math.hypot(tx, ty);
   if (m < 1e-6) return { tx: 0, ty: 0 };
@@ -964,7 +966,6 @@ function applyPhysicalDeadZone(tx, ty, dead) {
   const k = s * s * (3 - 2 * s);
   return { tx: tx * k, ty: ty * k };
 }
-
 function currentTilt(){
   if(sensorState.motionEnabled && sensorState.baseSet){
     const s = sensorTilt();
@@ -1009,10 +1010,8 @@ function sizeCanvas(){
   canvas.width=Math.floor(window.innerWidth*dpr);
   canvas.height=Math.floor(window.innerHeight*dpr);
   context.configure({ device, format, alphaMode:"opaque" });
-
   const aspect = canvas.width / Math.max(canvas.height, 1);
   camHeight = isTouchPrimary ? CAM_HEIGHT_TOUCH : CAM_HEIGHT_BASE;
-
   const minHorizWorld = MIN_HORIZ_CELLS * CELL;
   const vertExtent = minHorizWorld / Math.max(aspect, 0.1);
   const neededTan = vertExtent / (2 * camHeight);
@@ -1050,14 +1049,10 @@ function updateWallTex(ballX, ballZ) {
   const cz = Math.floor(ballZ / CELL);
   lastBallCellX = cx;
   lastBallCellZ = cz;
-
-  if (cx === lastTexCellX && cz === lastTexCellZ && destroyedWalls.size === lastTexDestroyedCount) {
-    return;
-  }
+  if (cx === lastTexCellX && cz === lastTexCellZ && destroyedWalls.size === lastTexDestroyedCount) return;
   lastTexCellX = cx;
   lastTexCellZ = cz;
   lastTexDestroyedCount = destroyedWalls.size;
-
   for (let dz = 0; dz < WALL_TEX_SIZE; dz++) {
     const wz = cz + dz - WALL_TEX_HALF;
     const rowBase = dz * WALL_TEX_SIZE;
@@ -1070,6 +1065,75 @@ function updateWallTex(ballX, ballZ) {
     { texture: wallTex },
     wallTexData,
     { bytesPerRow: WALL_TEX_SIZE },
+    [WALL_TEX_SIZE, WALL_TEX_SIZE]
+  );
+}
+
+// ===========================================================================
+//  Biome texture
+// ===========================================================================
+const biomeTexData = new Uint8Array(WALL_TEX_SIZE * WALL_TEX_SIZE * 4);
+const biomeDistBuf = new Float32Array(WALL_TEX_SIZE * WALL_TEX_SIZE);
+const biomeTex = device.createTexture({
+  size: [WALL_TEX_SIZE, WALL_TEX_SIZE],
+  format: "rgba8unorm",
+  usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+});
+let lastBiomeCX = null, lastBiomeCZ = null, biomeVersion = 0, lastBiomeVersion = -1;
+
+function paintBiome(sx, sz, cx, cz) {
+  const hue = (hashSeed(sx, sz, (SEED ^ 0xB10E) >>> 0) & 0xFFFF) / 65535;
+  const paletteIdx = Math.floor(hue * BIOME_PALETTE.length) % BIOME_PALETTE.length;
+  const [r, g, b] = BIOME_PALETTE[paletteIdx];
+
+  for (let dz = -SPECIAL_WALL_RADIUS; dz <= SPECIAL_WALL_RADIUS; dz++) {
+    for (let dx = -SPECIAL_WALL_RADIUS; dx <= SPECIAL_WALL_RADIUS; dx++) {
+      if (dx*dx + dz*dz > SPECIAL_WALL_RADIUS * SPECIAL_WALL_RADIUS) continue;
+      const wx = sx + dx;
+      const wz = sz + dz;
+      const px = wx - cx + WALL_TEX_HALF;
+      const pz = wz - cz + WALL_TEX_HALF;
+      if (px < 0 || px >= WALL_TEX_SIZE || pz < 0 || pz >= WALL_TEX_SIZE) continue;
+      const idx = pz * WALL_TEX_SIZE + px;
+      const d = dx*dx + dz*dz;
+      if (d < biomeDistBuf[idx]) {
+        biomeDistBuf[idx] = d;
+        biomeTexData[idx * 4]     = r;
+        biomeTexData[idx * 4 + 1] = g;
+        biomeTexData[idx * 4 + 2] = b;
+        biomeTexData[idx * 4 + 3] = 255;
+      }
+    }
+  }
+}
+
+function updateBiomeTex(ballX, ballZ) {
+  const cx = Math.floor(ballX / CELL);
+  const cz = Math.floor(ballZ / CELL);
+  if (cx === lastBiomeCX && cz === lastBiomeCZ && biomeVersion === lastBiomeVersion) return;
+  lastBiomeCX = cx;
+  lastBiomeCZ = cz;
+  lastBiomeVersion = biomeVersion;
+
+  for (let i = 0; i < WALL_TEX_SIZE * WALL_TEX_SIZE; i++) {
+    biomeTexData[i * 4]     = 127;
+    biomeTexData[i * 4 + 1] = 127;
+    biomeTexData[i * 4 + 2] = 127;
+    biomeTexData[i * 4 + 3] = 255;
+    biomeDistBuf[i] = 1e9;
+  }
+
+  for (let sz = cz - WALL_TEX_HALF - SPECIAL_WALL_RADIUS; sz <= cz + WALL_TEX_HALF + SPECIAL_WALL_RADIUS; sz++) {
+    for (let sx = cx - WALL_TEX_HALF - SPECIAL_WALL_RADIUS; sx <= cx + WALL_TEX_HALF + SPECIAL_WALL_RADIUS; sx++) {
+      if (!isSpecialWall(sx, sz)) continue;
+      paintBiome(sx, sz, cx, cz);
+    }
+  }
+
+  device.queue.writeTexture(
+    { texture: biomeTex },
+    biomeTexData,
+    { bytesPerRow: WALL_TEX_SIZE * 4 },
     [WALL_TEX_SIZE, WALL_TEX_SIZE]
   );
 }
@@ -1095,9 +1159,14 @@ struct Globals {
   ballCellZ : i32,
   invertState : f32,
   invertFlash : f32,
+  time : f32,
+  _pad5 : f32,
+  _pad6 : f32,
+  _pad7 : f32,
 };
 @group(0) @binding(0) var<uniform> G : Globals;
 @group(0) @binding(1) var wallTex : texture_2d<f32>;
+@group(0) @binding(2) var biomeTex : texture_2d<f32>;
 
 struct VOut {
   @builtin(position) pos : vec4<f32>,
@@ -1196,6 +1265,16 @@ fn mazeSolid(x: i32, z: i32) -> bool {
   let dz = z - G.ballCellZ + ${WALL_TEX_HALF};
   if (dx < 0 || dx >= ${WALL_TEX_SIZE} || dz < 0 || dz >= ${WALL_TEX_SIZE}) { return false; }
   return textureLoad(wallTex, vec2<i32>(dx, dz), 0).r > 0.5;
+}
+
+fn biomeTintAt(cellX: i32, cellZ: i32) -> vec3<f32> {
+  let relX = cellX - G.ballCellX + ${WALL_TEX_HALF};
+  let relZ = cellZ - G.ballCellZ + ${WALL_TEX_HALF};
+  if (relX < 0 || relX >= ${WALL_TEX_SIZE} || relZ < 0 || relZ >= ${WALL_TEX_SIZE}) {
+    return vec3<f32>(1.0);
+  }
+  let s = textureLoad(biomeTex, vec2<i32>(relX, relZ), 0).rgb;
+  return 0.6 + s * 0.8;
 }
 
 fn floorProximity(p: vec3<f32>) -> f32 {
@@ -1304,6 +1383,7 @@ fn sevenSegAt(uv: vec2<f32>, digit: i32) -> f32 {
 
   var m = 0.0;
   switch (digit) {
+    case 0: { m = max(max(a, b), max(max(c, d), max(e, f))); }
     case 1: { m = max(b, c); }
     case 2: { m = max(max(a, b), max(g, max(e, d))); }
     case 3: { m = max(max(a, b), max(g, max(c, d))); }
@@ -1318,7 +1398,6 @@ fn sevenSegAt(uv: vec2<f32>, digit: i32) -> f32 {
   return m;
 }
 
-// Двузначное число: <10 — одна большая цифра, >=10 — две половинные
 fn sevenSegCount(uv: vec2<f32>, count: i32) -> f32 {
   if (count < 10) {
     return sevenSegAt(uv, count);
@@ -1326,11 +1405,9 @@ fn sevenSegCount(uv: vec2<f32>, count: i32) -> f32 {
   let tens = (count / 10) % 10;
   let units = count % 10;
   if (uv.x < 0.5) {
-    let uvTens = vec2<f32>(uv.x * 2.0, uv.y);
-    return sevenSegAt(uvTens, tens);
+    return sevenSegAt(vec2<f32>(uv.x * 2.0, uv.y), tens);
   } else {
-    let uvUnits = vec2<f32>((uv.x - 0.5) * 2.0, uv.y);
-    return sevenSegAt(uvUnits, units);
+    return sevenSegAt(vec2<f32>((uv.x - 0.5) * 2.0, uv.y), units);
   }
 }
 
@@ -1391,7 +1468,7 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
     let thick = 2.0 * pow(cosV, 0.8);
     var absorbCol = vec3<f32>(1.6, 3.8, 1.1);
     if (G.invertState > 0.5) {
-        absorbCol = vec3<f32>(3.5, 1.0, 1.0);
+        absorbCol = vec3<f32>(4.0, 2.5, 0.6);
     }
     let absorb = exp(-thick * absorbCol);
     let refrDir = refract(-Vv, n, 1.0 / 1.5);
@@ -1401,7 +1478,7 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
 
     var innerGlow = vec3<f32>(0.30, 0.09, 0.68);
     if (G.invertState > 0.5) {
-        innerGlow = vec3<f32>(0.0, 0.8, 1.0);
+        innerGlow = vec3<f32>(0.1, 0.5, 1.0);
     }
     trans += innerGlow * (0.15 + 0.55 * (1.0 - cosV));
 
@@ -1409,14 +1486,13 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
     let rim = pow(1.0 - cosV, 4.0);
     var rimCol = vec3<f32>(0.55, 0.22, 1.00);
     if (G.invertState > 0.5) {
-        rimCol = vec3<f32>(0.2, 0.8, 1.0);
+        rimCol = vec3<f32>(0.1, 0.5, 1.0);
     }
     col += rimCol * rim * 1.35;
     let edge = pow(1.0 - cosV, 9.0);
     col += vec3<f32>(0.85, 0.80, 1.00) * edge * 0.8;
     let sparkN = fbm2(i.local * 7.0 + Rm[0] * 4.0);
     col += vec3<f32>(0.9, 0.75, 1.0) * smoothstep(0.78, 0.96, sparkN) * rim * 0.6;
-
     col += vec3<f32>(0.0, 1.0, 1.0) * G.invertFlash * 15.0;
   } else {
     let faceN = normalize(i.nrm);
@@ -1428,22 +1504,23 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
     if (matType > 1.5) {
       let count = i32(i.matW.z + 0.5);
       let isTop = step(0.99, faceN.y);
-
-      var baseCol = vec3<f32>(0.3, 0.1, 0.1);
-      var glowCol = vec3<f32>(1.0, 0.2, 0.2);
-      if (count == 0) {
-        baseCol = vec3<f32>(0.1, 0.3, 0.1);
-        glowCol = vec3<f32>(0.2, 1.0, 0.2);
-      }
-
-      // Цифра: до 2 разрядов
       let m = sevenSegCount(i.local.xz, count) * isTop;
 
-      let pulse = 0.8 + 0.2 * sin(i.wpos.x * 2.0 + i.wpos.z * 3.0 + G.camPos.x);
-      col = baseCol * (0.5 + 0.5 * max(dot(faceN, L), 0.0)) + glowCol * m * 2.0 * pulse;
+      let t = 0.5 + 0.5 * sin(G.time * 1.1 + i.wpos.x * 0.35 + i.wpos.z * 0.55);
+      let wallBlue = vec3<f32>(0.05, 0.22, 0.55);
+      let wallCyan = vec3<f32>(0.12, 0.55, 0.95);
+      let wallPulse = mix(wallBlue, wallCyan, t);
+
+      var digitCol = vec3<f32>(1.0, 0.25, 0.25);
+      if (count == 0) {
+        digitCol = vec3<f32>(0.3, 1.0, 0.5);
+      }
+
+      let ndl = max(dot(faceN, L), 0.0);
+      col = wallPulse * (0.5 + 0.5 * ndl) + digitCol * m * 2.0;
 
       let rim = pow(1.0 - max(dot(faceN, Vv), 0.0), 3.0);
-      col += glowCol * rim * 0.5;
+      col += wallPulse * rim * 0.6 + digitCol * rim * m * 0.5;
     } else if (matType > 0.5) {
       let cellIdx = vec2<i32>(floor(i.wpos.xz / ${CELL.toFixed(2)}));
       let isLight = (((cellIdx.x >> 1) + (cellIdx.y >> 1)) & 1) == 1;
@@ -1458,6 +1535,7 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
       albedo = mix(albedo, albedo * 2.1, veinMask * 0.45);
       albedo *= 0.90 + 0.20 * vnoise(i.wpos * 4.5 + th * 7.0);
       albedo *= 0.94 + 0.12 * th;
+      albedo *= biomeTintAt(cellIdx.x, cellIdx.y);
 
       let luv = fract(i.wpos.xz / ${CELL.toFixed(2)});
       let edgeDist = min(min(luv.x, 1.0 - luv.x), min(luv.y, 1.0 - luv.y));
@@ -1514,6 +1592,10 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
       let mossH = 1.0 - smoothstep(0.08, 0.72, i.wpos.y);
       let moss = mossH * smoothstep(0.35, 0.65, vnoise(i.wpos * 1.8 + vec3<f32>(13.7))) * 0.75;
       albedo = mix(albedo, vec3<f32>(0.070, 0.130, 0.065), moss);
+
+      let wCellX = i32(floor(i.wpos.x / ${CELL.toFixed(2)}));
+      let wCellZ = i32(floor(i.wpos.z / ${CELL.toFixed(2)}));
+      albedo *= biomeTintAt(wCellX, wCellZ);
 
       let ndl = max(dot(n, L), 0.0);
       let hv = normalize(L + Vv);
@@ -1690,14 +1772,16 @@ const ubo = device.createBuffer({ size: UBO_SIZE, usage: GPUBufferUsage.UNIFORM 
 const globalsBGL = device.createBindGroupLayout({
   entries:[
     { binding:0, visibility:GPUShaderStage.VERTEX|GPUShaderStage.FRAGMENT, buffer:{ type:"uniform" } },
-    { binding:1, visibility:GPUShaderStage.FRAGMENT, texture:{ sampleType:"float" } }
+    { binding:1, visibility:GPUShaderStage.FRAGMENT, texture:{ sampleType:"float" } },
+    { binding:2, visibility:GPUShaderStage.FRAGMENT, texture:{ sampleType:"float" } }
   ]
 });
 const globalsBG = device.createBindGroup({
   layout: globalsBGL,
   entries:[
     { binding:0, resource:{ buffer: ubo } },
-    { binding:1, resource: wallTex.createView() }
+    { binding:1, resource: wallTex.createView() },
+    { binding:2, resource: biomeTex.createView() }
   ]
 });
 
@@ -1781,7 +1865,6 @@ function drawMapOnCanvas(ctx, width, height, centerCellX, centerCellZ, scale, pa
 
   const halfW = width / 2;
   const halfH = height / 2;
-
   const cx = centerCellX + panX / scale;
   const cz = centerCellZ + panY / scale;
   const halfCellsW = halfW / scale;
@@ -1795,13 +1878,12 @@ function drawMapOnCanvas(ctx, width, height, centerCellX, centerCellZ, scale, pa
   for (let z = minZ; z <= maxZ; z++) {
     for (let x = minX; x <= maxX; x++) {
       if (!visitedCells.has(`${x},${z}`)) continue;
-
       const px = halfW + (x - centerCellX) * scale - panX;
       const py = halfH + (z - centerCellZ) * scale - panY;
 
       if (isSolidWithDestroyed(x, z)) {
         if (isSpecialWall(x, z)) {
-          ctx.fillStyle = "#ffcc00";
+          ctx.fillStyle = "#00d4ff";
           ctx.beginPath();
           ctx.moveTo(px + scale/2, py);
           ctx.lineTo(px + scale, py + scale/2);
@@ -1836,7 +1918,7 @@ function drawMapOnCanvas(ctx, width, height, centerCellX, centerCellZ, scale, pa
 
   ctx.beginPath();
   ctx.arc(ppx, ppy, Math.max(3, scale * 0.3), 0, Math.PI * 2);
-  ctx.fillStyle = isInverted ? "#00ffff" : "#8c5aff";
+  ctx.fillStyle = isInverted ? "#00d4ff" : "#8c5aff";
   ctx.fill();
   ctx.lineWidth = Math.max(1, scale * 0.05);
   ctx.strokeStyle = "#ffffff";
@@ -1845,10 +1927,8 @@ function drawMapOnCanvas(ctx, width, height, centerCellX, centerCellZ, scale, pa
 
 function updateMinimap() {
   if (!minimapVisible) return;
-
   const px = Math.floor(ball.x / CELL);
   const pz = Math.floor(ball.z / CELL);
-
   const R = 5;
   for (let dz = -R; dz <= R; dz++) {
     for (let dx = -R; dx <= R; dx++) {
@@ -1857,10 +1937,8 @@ function updateMinimap() {
       }
     }
   }
-
   const scale = minimapSize / 21;
   drawMapOnCanvas(minimapCtx, minimapSize, minimapSize, px + 0.5, pz + 0.5, scale, 0, 0);
-
   if (mapOpen) {
     const fullScale = 40 * fullZoom;
     drawMapOnCanvas(fullCtx, fullCanvas.width, fullCanvas.height, px + 0.5, pz + 0.5, fullScale, fullPanX, fullPanY);
@@ -1921,11 +1999,13 @@ function restart() {
   inversionCharges = 0;
   isInverted = false;
   invertFlash = 0;
+  firstBonusShown = false;
   updateChargeUI();
   ball.x = CELL * (SPAWN_CELL_X + 0.5);
   ball.z = CELL * (SPAWN_CELL_Z + 0.5);
   ball.vx = 0; ball.vz = 0;
   lastTexCellX = null; lastTexCellZ = null; lastTexDestroyedCount = -1;
+  lastBiomeCX = null; lastBiomeCZ = null; biomeVersion++;
 
   const el = document.getElementById("score");
   el.textContent = "0";
@@ -1939,7 +2019,6 @@ function restart() {
 overlay.addEventListener("click", ()=>{
   initAudio();
   requestWakeLock();
-
   let pr = Promise.resolve("granted");
   if("DeviceMotionEvent" in window && typeof DeviceMotionEvent.requestPermission === "function")
     pr = DeviceMotionEvent.requestPermission();
@@ -1951,7 +2030,6 @@ overlay.addEventListener("click", ()=>{
   }).catch(()=>hideOverlay());
 });
 
-// Long-press → menu, double-tap → recalibrate tilt, single tap → toggle invert
 let pressTimer = null, pressActive = false, pressFired = false;
 let lastTapTime = 0;
 
@@ -1986,7 +2064,7 @@ canvas.addEventListener("pointerup", () => {
     for (let i = 0; i < 20; i++) {
       const ang = Math.random() * Math.PI * 2;
       const spd = 2 + Math.random() * 5;
-      spawnParticle(ball.x, BALL_R, ball.z, Math.cos(ang) * spd, Math.random() * 5, Math.sin(ang) * spd, 0.1, 0.0, 1.0, 1.0, 0.6);
+      spawnParticle(ball.x, BALL_R, ball.z, Math.cos(ang) * spd, Math.random() * 5, Math.sin(ang) * spd, 0.1, 0.0, 0.8, 1.0, 0.6);
     }
   } else {
     const now = performance.now();
@@ -2041,23 +2119,19 @@ minimapWrap.addEventListener("pointerdown", e => {
   dragStartX = e.clientX;
   dragStartY = e.clientY;
   dragMoved = false;
-
   const rect = minimapWrap.getBoundingClientRect();
   minimapX = rect.left;
   minimapY = rect.top;
   minimapWrap.style.right = "auto";
   minimapWrap.style.top = minimapY + "px";
   minimapWrap.style.left = minimapX + "px";
-
   minimapWrap.setPointerCapture(e.pointerId);
 });
-
 minimapWrap.addEventListener("pointermove", e => {
   if (!isDraggingMinimap) return;
   const dx = e.clientX - dragStartX;
   const dy = e.clientY - dragStartY;
   if (Math.abs(dx) > 5 || Math.abs(dy) > 5) dragMoved = true;
-
   if (dragMoved) {
     minimapX += dx;
     minimapY += dy;
@@ -2067,19 +2141,15 @@ minimapWrap.addEventListener("pointermove", e => {
     dragStartY = e.clientY;
   }
 });
-
 minimapWrap.addEventListener("pointerup", e => {
   isDraggingMinimap = false;
   try { minimapWrap.releasePointerCapture(e.pointerId); } catch(_) {}
-  if (!dragMoved) {
-    openFullscreenMap();
-  }
+  if (!dragMoved) openFullscreenMap();
 });
 minimapWrap.addEventListener("pointercancel", e => {
   isDraggingMinimap = false;
   try { minimapWrap.releasePointerCapture(e.pointerId); } catch(_) {}
 });
-
 minimapGrip.addEventListener("pointerdown", e => {
   e.stopPropagation();
   isResizingMinimap = true;
@@ -2087,31 +2157,26 @@ minimapGrip.addEventListener("pointerdown", e => {
   dragStartY = e.clientY;
   minimapGrip.setPointerCapture(e.pointerId);
 });
-
 minimapGrip.addEventListener("pointermove", e => {
   if (!isResizingMinimap) return;
   const dx = e.clientX - dragStartX;
   const dy = e.clientY - dragStartY;
   const delta = Math.max(dx, dy);
-
   minimapSize = Math.max(80, Math.min(300, minimapSize + delta));
   minimapCanvas.width = minimapSize;
   minimapCanvas.height = minimapSize;
   minimapWrap.style.width = minimapSize + "px";
   minimapWrap.style.height = minimapSize + "px";
-
   dragStartX = e.clientX;
   dragStartY = e.clientY;
 });
-
 minimapGrip.addEventListener("pointerup", e => {
   isResizingMinimap = false;
   try { minimapGrip.releasePointerCapture(e.pointerId); } catch(_) {}
 });
 
 // ===========================================================================
-//  Fullscreen map interactions
-//  ОБЪЯВЛЕНИЯ ПЕРЕМЕННЫХ — БЕЗ НИХ В STRICT MODE ОБРАБОТЧИКИ ПАДАЮТ.
+//  Fullscreen map
 // ===========================================================================
 let isPanning = false;
 let lastPanX = 0, lastPanY = 0;
@@ -2137,13 +2202,11 @@ fullMapEl.addEventListener("pointerdown", e => {
     touchDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
   }
 });
-
 fullMapEl.addEventListener("pointermove", e => {
   const p = fullMapPointers.get(e.pointerId);
   if (!p) return;
   p.x = e.clientX;
   p.y = e.clientY;
-
   if (fullMapPointers.size === 1 && isPanning) {
     const dx = e.clientX - lastPanX;
     const dy = e.clientY - lastPanY;
@@ -2162,7 +2225,6 @@ fullMapEl.addEventListener("pointermove", e => {
     }
   }
 });
-
 fullMapEl.addEventListener("pointerup", e => {
   fullMapPointers.delete(e.pointerId);
   if (fullMapPointers.size === 0) {
@@ -2176,7 +2238,6 @@ fullMapEl.addEventListener("pointerup", e => {
     touchDist = 0;
   }
 });
-
 fullMapEl.addEventListener("pointercancel", e => {
   fullMapPointers.delete(e.pointerId);
   if (fullMapPointers.size === 0) {
@@ -2184,7 +2245,6 @@ fullMapEl.addEventListener("pointercancel", e => {
     touchDist = 0;
   }
 });
-
 fullMapEl.addEventListener("wheel", e => {
   e.preventDefault();
   fullZoom *= e.deltaY > 0 ? 0.9 : 1.1;
@@ -2213,6 +2273,7 @@ let lastTime = performance.now();
 function frame(now){
   const dt = Math.min(0.05, (now - lastTime) / 1000);
   lastTime = now;
+  globalTime += dt;
 
   updateFps(dt);
   updateHpVisibility();
@@ -2223,7 +2284,6 @@ function frame(now){
     updateParticles(dt);
     if (invertFlash > 0) invertFlash = Math.max(0, invertFlash - dt * 4);
   } else {
-    // даже в паузе пусть бонусные орбы медленно пульсируют
     for (const orb of bonusOrbs) orb.t += dt * 0.3;
   }
 
@@ -2234,6 +2294,7 @@ function frame(now){
   updateRollSound(speedNow, dt, active);
 
   updateWallTex(ball.x, ball.z);
+  updateBiomeTex(ball.x, ball.z);
   updateMinimap();
 
   const sX = shake > 0 ? (Math.random() - 0.5) * shake : 0;
@@ -2254,6 +2315,7 @@ function frame(now){
   uboDataU32[53] = lastBallCellZ | 0;
   uboData[54] = isInverted ? 1.0 : 0.0;
   uboData[55] = invertFlash;
+  uboData[56] = globalTime;
   device.queue.writeBuffer(ubo,0,uboData);
 
   buildInstances(ball.x, ball.z);
