@@ -20,10 +20,47 @@
     pointer-events:none; font-variant-numeric: tabular-nums;
     opacity:0; transition: opacity 0.3s ease; }
   #hud.low { color:#ff8090; text-shadow: 0 0 10px rgba(255,80,120,.9); }
+  
+  /* Score */
+  #score { position:fixed; top:18px; left:50%; transform:translateX(-50%) translateY(-10px);
+    z-index:60; color:#e2e8f0; font-size:32px; font-weight:800;
+    text-shadow: 0 0 15px rgba(140,90,255,1), 0 0 30px rgba(80,40,180,.8);
+    pointer-events:none; opacity:0;
+    transition: opacity 0.3s ease, transform 0.3s ease; }
+  #score.visible { opacity:1; transform:translateX(-50%) translateY(0); }
+  
+  /* FPS */
   #fps { position:fixed; top:18px; right:18px; z-index:60;
     color:#a0c8ff; font-size:15px; font-weight:600;
     text-shadow: 0 0 8px rgba(60,120,255,.7); pointer-events:none;
     font-variant-numeric: tabular-nums; opacity:.8; }
+
+  /* Minimap */
+  #minimap-wrap { position:fixed; right:18px; top:45px; z-index:40;
+    width:140px; height:140px; border-radius:8px; border:1px solid rgba(140,90,255,.4);
+    overflow:hidden; background:rgba(10,15,30,0.8); backdrop-filter:blur(4px);
+    touch-action:none; cursor:grab; }
+  #minimap-wrap:active { cursor:grabbing; }
+  #minimap-canvas { width:100%; height:100%; display:block; }
+  #minimap-grip { position:absolute; bottom:2px; right:2px; width:16px; height:16px;
+    cursor:nwse-resize; background:linear-gradient(135deg, transparent 50%, rgba(140,90,255,0.8) 50%);
+    border-bottom-right-radius:6px; }
+
+  /* Fullscreen Map */
+  #fullscreen-map { position:fixed; inset:0; z-index:80;
+    background:rgba(2,6,23,0.95); backdrop-filter:blur(6px);
+    display:flex; justify-content:center; align-items:center;
+    touch-action:none; }
+  #fullscreen-map.hidden { display:none; }
+  #fullscreen-canvas { width:100%; height:100%; cursor:grab; }
+  #fullscreen-canvas:active { cursor:grabbing; }
+  #close-map-btn { position:absolute; top:20px; right:20px; z-index:90;
+    width:44px; height:44px; border-radius:50%;
+    background:rgba(140,90,255,0.2); border:1px solid rgba(140,90,255,0.6);
+    color:#fff; font-size:20px; cursor:pointer;
+    display:flex; justify-content:center; align-items:center; }
+  #close-map-btn:hover { background:rgba(140,90,255,0.4); }
+
   #menu, #game-over { position:fixed; inset:0; z-index:50;
     display:grid; place-items:center; color:#e2e8f0;
     background:rgba(2,6,23,.82); backdrop-filter:blur(10px); }
@@ -32,9 +69,7 @@
   .panel { background:rgba(15,20,40,.95); padding:28px 34px; border-radius:16px;
     border:1px solid rgba(140,90,255,.45); box-shadow:0 0 40px rgba(80,40,180,.4);
     display:flex; flex-direction:column; gap:18px; min-width:320px; max-width:400px;
-    font-size:16px;
-    /* Новое: позволяем панели скроллиться, если не влезает в экран телефона */
-    max-height: 90vh; overflow-y: auto; }
+    font-size:16px; max-height:90vh; overflow-y:auto; }
   .panel h1, .panel h2 { margin:0 0 6px; text-align:center; font-weight:700; }
   .panel h1 { font-size:32px; color:#ff8090; text-shadow:0 0 12px rgba(255,80,120,.7); }
   .panel h2 { font-size:22px; }
@@ -49,10 +84,8 @@
   .slider-row label span { color:#b8a0ff; font-weight:600; font-variant-numeric:tabular-nums; }
   input[type=range] { width:100%; accent-color:#8c5aff; }
   .hint { font-size:13px; opacity:.55; text-align:center; margin-top:-6px; }
-
-  /* Чекбоксы Invert X / Y — только на тач-устройствах */
-  .checkbox-row { display:flex; gap:22px; justify-content:center; margin-top:-4px; }
-  body.desktop .checkbox-row { display: none; }
+  .checkbox-row { display:flex; gap:22px; justify-content:center; margin-top:-4px; flex-wrap:wrap; }
+  body.desktop .invert-row { display:none; }
   .checkbox-row label { display:flex; align-items:center; gap:8px;
     font-size:15px; opacity:.9; cursor:pointer; user-select:none; }
   .checkbox-row input[type=checkbox] { width:18px; height:18px;
@@ -61,13 +94,24 @@
 </head>
 <body>
 <div id="overlay">Управление наклоном телефона/мышкой
-Зажатие — меню
+Зажатие — Меню
 Два тапа — обнулить наклон (текущее положение = нейтраль)
 
 Нажми, чтобы начать игру</div>
 <div id="hud">5/5 HP</div>
+<div id="score">0</div>
 <div id="fps">— FPS</div>
 <canvas id="canvas"></canvas>
+
+<div id="minimap-wrap">
+  <canvas id="minimap-canvas"></canvas>
+  <div id="minimap-grip"></div>
+</div>
+
+<div id="fullscreen-map" class="hidden">
+  <button id="close-map-btn">✕</button>
+  <canvas id="fullscreen-canvas"></canvas>
+</div>
 
 <div id="game-over" class="hidden">
   <div class="panel">
@@ -89,7 +133,11 @@
       <input type="range" id="sens-y" min="1" max="30" step="0.5" value="15">
     </div>
     <div class="hint">Сколько градусов наклонить телефон для макс. скорости</div>
+    
     <div class="checkbox-row">
+      <label><input type="checkbox" id="minimap-chk" checked> Minimap</label>
+    </div>
+    <div class="checkbox-row invert-row">
       <label><input type="checkbox" id="invert-x"> Invert X</label>
       <label><input type="checkbox" id="invert-y"> Invert Y</label>
     </div>
@@ -147,7 +195,6 @@ let fovDeg = FOV_DEG_BASE;
 let isTouchPrimary = false;
 try { isTouchPrimary = window.matchMedia('(pointer: coarse)').matches; } catch(e) {}
 
-// Скрываем чекбоксы Invert на устройствах с мышью/клавиатурой как основным вводом
 if (!isTouchPrimary) document.body.classList.add('desktop');
 
 // ===========================================================================
@@ -155,7 +202,11 @@ if (!isTouchPrimary) document.body.classList.add('desktop');
 // ===========================================================================
 let SEED = (Math.random() * 0xFFFFFFFF) >>> 0;
 const destroyedWalls = new Set();
+const visitedCells = new Set();
+const tileNumCache = new Map();
 let hp = INITIAL_HP;
+let score = 0;
+let scoreTimeout = null;
 let hpVisibleUntil = 0;
 let hpCurrentlyVisible = false;
 let gameOver = false;
@@ -165,6 +216,54 @@ let sensY = 15.0;
 let invertX = false;
 let invertY = false;
 let shake = 0;
+
+// ===========================================================================
+//  Minimap state
+// ===========================================================================
+let minimapVisible = true;
+let minimapSize = 140;
+let minimapX = -1, minimapY = -1;
+let isDraggingMinimap = false;
+let isResizingMinimap = false;
+let dragStartX = 0, dragStartY = 0, dragMoved = false;
+
+const minimapWrap = document.getElementById("minimap-wrap");
+const minimapCanvas = document.getElementById("minimap-canvas");
+const minimapCtx = minimapCanvas.getContext("2d");
+const minimapGrip = document.getElementById("minimap-grip");
+
+minimapCanvas.width = minimapSize;
+minimapCanvas.height = minimapSize;
+minimapWrap.style.width = minimapSize + "px";
+minimapWrap.style.height = minimapSize + "px";
+
+// Fullscreen map state
+let mapOpen = false;
+let fullZoom = 1, fullPanX = 0, fullPanY = 0;
+const fullMapEl = document.getElementById("fullscreen-map");
+const fullCanvas = document.getElementById("fullscreen-canvas");
+const fullCtx = fullCanvas.getContext("2d");
+
+function resizeFullscreenCanvas() {
+  fullCanvas.width = window.innerWidth;
+  fullCanvas.height = window.innerHeight;
+}
+
+function openFullscreenMap() {
+  mapOpen = true;
+  fullMapEl.classList.remove("hidden");
+  resizeFullscreenCanvas();
+  fullPanX = 0;
+  fullPanY = 0;
+}
+function closeFullscreenMap() {
+  mapOpen = false;
+  fullMapEl.classList.add("hidden");
+}
+
+window.addEventListener("resize", () => {
+  if (mapOpen) resizeFullscreenCanvas();
+});
 
 // ===========================================================================
 //  Wake Lock
@@ -381,6 +480,15 @@ function tileNumber(x, z) {
   if (wallHasMine(x+1, z+1)) n++;
   return n;
 }
+function tileNumberCached(x, z) {
+  const key = `${x},${z}`;
+  let v = tileNumCache.get(key);
+  if (v === undefined) {
+    v = tileNumber(x, z);
+    tileNumCache.set(key, v);
+  }
+  return v;
+}
 
 // ===========================================================================
 //  Particle system
@@ -512,10 +620,33 @@ function collidesAt(bx, bz) {
   return false;
 }
 
+function addScore(amount) {
+  score += amount;
+  const el = document.getElementById("score");
+  el.textContent = score;
+  el.classList.add("visible");
+  clearTimeout(scoreTimeout);
+  scoreTimeout = setTimeout(() => {
+    el.classList.remove("visible");
+  }, 2000);
+}
+
 function breakWall(x, z) {
   const key = `${x},${z}`;
   if (destroyedWalls.has(key)) return;
   destroyedWalls.add(key);
+  
+  // Инвалидируем кэш цифр у соседей и у самой клетки
+  tileNumCache.delete(`${x},${z}`);
+  tileNumCache.delete(`${x-1},${z}`);
+  tileNumCache.delete(`${x+1},${z}`);
+  tileNumCache.delete(`${x},${z-1}`);
+  tileNumCache.delete(`${x},${z+1}`);
+  tileNumCache.delete(`${x-1},${z-1}`);
+  tileNumCache.delete(`${x+1},${z-1}`);
+  tileNumCache.delete(`${x-1},${z+1}`);
+  tileNumCache.delete(`${x+1},${z+1}`);
+
   const isMine = hasMineRaw(x, z);
   if (isMine) {
     hp = Math.max(0, hp - 1);
@@ -529,6 +660,7 @@ function breakWall(x, z) {
     }
   } else {
     playBreakSound();
+    addScore(1);
   }
   spawnBreakParticles(x, z, isMine);
 }
@@ -699,7 +831,6 @@ function currentTilt(){
       const d = applyPhysicalDeadZone(s.tx, s.ty, dead);
       let tx = d.tx / Math.max(sensX, 0.1) * MAX_TILT_DEG;
       let ty = d.ty / Math.max(sensY, 0.1) * MAX_TILT_DEG;
-      // Инверсия ТОЛЬКО для сенсора (телефон)
       if (invertX) tx = -tx;
       if (invertY) ty = -ty;
       const mag = Math.hypot(tx, ty);
@@ -707,7 +838,6 @@ function currentTilt(){
       return limitTiltMag(tx, ty);
     }
   }
-  // Мышь / клавиатура — инверсия не применяется никогда
   let mx=mouse.active?mouse.x:0, my=mouse.active?mouse.y:0;
   if(keys.KeyA||keys.ArrowLeft)  mx-=1;
   if(keys.KeyD||keys.ArrowRight) mx+=1;
@@ -1301,7 +1431,7 @@ function buildInstances(worldX, worldZ){
                CELL + 2*WALL_PAD_XZ,
                0, rnd, 0);
     } else {
-      const num = tileNumber(x, z);
+      const num = tileNumberCached(x, z);
       pushInst(x*CELL, -0.15, z*CELL, CELL, 0.15, CELL, 1, rnd, num);
     }
   }
@@ -1429,6 +1559,95 @@ function buildViewProj(eye, target, aspect){
 }
 
 // ===========================================================================
+//  Minimap drawing
+// ===========================================================================
+function drawMapOnCanvas(ctx, width, height, centerCellX, centerCellZ, scale, panX, panY) {
+  ctx.fillStyle = "#050b18";
+  ctx.fillRect(0, 0, width, height);
+
+  const halfW = width / 2;
+  const halfH = height / 2;
+
+  const cx = centerCellX + panX / scale;
+  const cz = centerCellZ + panY / scale;
+  const halfCellsW = halfW / scale;
+  const halfCellsH = halfH / scale;
+
+  const minX = Math.floor(cx - halfCellsW) - 1;
+  const maxX = Math.ceil(cx + halfCellsW) + 1;
+  const minZ = Math.floor(cz - halfCellsH) - 1;
+  const maxZ = Math.ceil(cz + halfCellsH) + 1;
+
+  for (let z = minZ; z <= maxZ; z++) {
+    for (let x = minX; x <= maxX; x++) {
+      if (!visitedCells.has(`${x},${z}`)) continue;
+
+      const px = halfW + (x - centerCellX) * scale - panX;
+      const py = halfH + (z - centerCellZ) * scale - panY;
+
+      if (isSolidWithDestroyed(x, z)) {
+        ctx.fillStyle = "#3a455c";
+      } else {
+        const isLight = (((x >> 1) + (z >> 1)) & 1) === 1;
+        ctx.fillStyle = isLight ? "#202635" : "#12151f";
+      }
+      ctx.fillRect(Math.floor(px), Math.floor(py), Math.ceil(scale), Math.ceil(scale));
+
+      if (!isSolidWithDestroyed(x, z)) {
+        const num = tileNumberCached(x, z);
+        if (num > 0) {
+          ctx.fillStyle = num >= 5 ? "#ff8080" : num >= 3 ? "#ffb060" : "#60c0ff";
+          const dotSize = Math.max(1.5, scale * 0.15);
+          ctx.beginPath();
+          ctx.arc(px + scale/2, py + scale/2, dotSize, 0, Math.PI*2);
+          ctx.fill();
+        }
+      }
+    }
+  }
+
+  const playerX = ball.x / CELL;
+  const playerZ = ball.z / CELL;
+  const ppx = halfW + (playerX - centerCellX) * scale - panX;
+  const ppy = halfH + (playerZ - centerCellZ) * scale - panY;
+
+  ctx.beginPath();
+  ctx.arc(ppx, ppy, Math.max(3, scale * 0.3), 0, Math.PI * 2);
+  ctx.fillStyle = "#8c5aff";
+  ctx.fill();
+  ctx.lineWidth = Math.max(1, scale * 0.05);
+  ctx.strokeStyle = "#ffffff";
+  ctx.stroke();
+}
+
+function updateMinimap() {
+  if (!minimapVisible) return;
+
+  const px = Math.floor(ball.x / CELL);
+  const pz = Math.floor(ball.z / CELL);
+
+  // Reveal fog of war
+  const R = 5;
+  for (let dz = -R; dz <= R; dz++) {
+    for (let dx = -R; dx <= R; dx++) {
+      if (dx*dx + dz*dz <= R*R) {
+        visitedCells.add(`${px+dx},${pz+dz}`);
+      }
+    }
+  }
+
+  // Small minimap
+  const scale = minimapSize / 21;
+  drawMapOnCanvas(minimapCtx, minimapSize, minimapSize, px + 0.5, pz + 0.5, scale, 0, 0);
+
+  // Fullscreen map
+  if (mapOpen) {
+    const fullScale = 40 * fullZoom;
+    drawMapOnCanvas(fullCtx, fullCanvas.width, fullCanvas.height, px + 0.5, pz + 0.5, fullScale, fullPanX, fullPanY);
+  }
+}
+
+// ===========================================================================
 //  UI
 // ===========================================================================
 const overlay = document.getElementById("overlay");
@@ -1469,14 +1688,22 @@ function closeMenu() {
 function restart() {
   SEED = (Math.random() * 0xFFFFFFFF) >>> 0;
   destroyedWalls.clear();
+  visitedCells.clear();
+  tileNumCache.clear();
   particles.length = 0;
   shake = 0;
   hp = INITIAL_HP;
+  score = 0;
   gameOver = false;
   ball.x = CELL * (SPAWN_CELL_X + 0.5);
   ball.z = CELL * (SPAWN_CELL_Z + 0.5);
   ball.vx = 0; ball.vz = 0;
   lastTexCellX = null; lastTexCellZ = null; lastTexDestroyedCount = -1;
+  
+  const el = document.getElementById("score");
+  el.textContent = "0";
+  el.classList.remove("visible");
+  
   updateHp(false);
   gameOverEl.classList.add("hidden");
   requestWakeLock();
@@ -1554,8 +1781,156 @@ document.getElementById("invert-x").addEventListener("change", (e) => {
 document.getElementById("invert-y").addEventListener("change", (e) => {
   invertY = e.target.checked;
 });
+document.getElementById("minimap-chk").addEventListener("change", (e) => {
+  minimapVisible = e.target.checked;
+  minimapWrap.style.display = minimapVisible ? "block" : "none";
+});
 
 updateHp(false);
+
+// ===========================================================================
+//  Minimap Interaction
+// ===========================================================================
+minimapWrap.addEventListener("pointerdown", e => {
+  e.stopPropagation();
+  isDraggingMinimap = true;
+  dragStartX = e.clientX;
+  dragStartY = e.clientY;
+  dragMoved = false;
+  
+  const rect = minimapWrap.getBoundingClientRect();
+  minimapX = rect.left;
+  minimapY = rect.top;
+  minimapWrap.style.right = "auto";
+  minimapWrap.style.top = minimapY + "px";
+  minimapWrap.style.left = minimapX + "px";
+  
+  minimapWrap.setPointerCapture(e.pointerId);
+});
+
+minimapWrap.addEventListener("pointermove", e => {
+  if (!isDraggingMinimap) return;
+  const dx = e.clientX - dragStartX;
+  const dy = e.clientY - dragStartY;
+  if (Math.abs(dx) > 5 || Math.abs(dy) > 5) dragMoved = true;
+  
+  if (dragMoved) {
+    minimapX += dx;
+    minimapY += dy;
+    minimapWrap.style.left = minimapX + "px";
+    minimapWrap.style.top = minimapY + "px";
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+  }
+});
+
+minimapWrap.addEventListener("pointerup", e => {
+  isDraggingMinimap = false;
+  minimapWrap.releasePointerCapture(e.pointerId);
+  if (!dragMoved) {
+    openFullscreenMap();
+  }
+});
+minimapWrap.addEventListener("pointercancel", e => {
+  isDraggingMinimap = false;
+  minimapWrap.releasePointerCapture(e.pointerId);
+});
+
+minimapGrip.addEventListener("pointerdown", e => {
+  e.stopPropagation();
+  isResizingMinimap = true;
+  dragStartX = e.clientX;
+  dragStartY = e.clientY;
+  minimapGrip.setPointerCapture(e.pointerId);
+});
+
+minimapGrip.addEventListener("pointermove", e => {
+  if (!isResizingMinimap) return;
+  const dx = e.clientX - dragStartX;
+  const dy = e.clientY - dragStartY;
+  const delta = Math.max(dx, dy);
+  
+  minimapSize = Math.max(80, Math.min(300, minimapSize + delta));
+  minimapCanvas.width = minimapSize;
+  minimapCanvas.height = minimapSize;
+  minimapWrap.style.width = minimapSize + "px";
+  minimapWrap.style.height = minimapSize + "px";
+  
+  dragStartX = e.clientX;
+  dragStartY = e.clientY;
+});
+
+minimapGrip.addEventListener("pointerup", e => {
+  isResizingMinimap = false;
+  minimapGrip.releasePointerCapture(e.pointerId);
+});
+
+// Fullscreen map interactions
+document.getElementById("close-map-btn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  closeFullscreenMap();
+});
+
+let isPanning = false, lastPanX = 0, lastPanY = 0;
+let touchDist = 0;
+
+fullMapEl.addEventListener("pointerdown", e => {
+  if (e.target.id === "close-map-btn") return;
+  isPanning = true;
+  lastPanX = e.clientX;
+  lastPanY = e.clientY;
+  fullMapEl.setPointerCapture(e.pointerId);
+});
+
+fullMapEl.addEventListener("pointermove", e => {
+  if (!isPanning || touchDist > 0) return;
+  fullPanX += e.clientX - lastPanX;
+  fullPanY += e.clientY - lastPanY;
+  lastPanX = e.clientX;
+  lastPanY = e.clientY;
+});
+
+fullMapEl.addEventListener("pointerup", e => {
+  isPanning = false;
+  fullMapEl.releasePointerCapture(e.pointerId);
+});
+fullMapEl.addEventListener("pointercancel", e => {
+  isPanning = false;
+  fullMapEl.releasePointerCapture(e.pointerId);
+});
+
+fullMapEl.addEventListener("wheel", e => {
+  e.preventDefault();
+  fullZoom *= e.deltaY > 0 ? 0.9 : 1.1;
+  fullZoom = Math.max(0.3, Math.min(10, fullZoom));
+}, { passive: false });
+
+fullMapEl.addEventListener("touchstart", e => {
+  if (e.touches.length === 2) {
+    touchDist = Math.hypot(
+      e.touches[0].clientX - e.touches[1].clientX,
+      e.touches[0].clientY - e.touches[1].clientY
+    );
+  }
+}, { passive: true });
+
+fullMapEl.addEventListener("touchmove", e => {
+  if (e.touches.length === 2 && touchDist > 0) {
+    const newDist = Math.hypot(
+      e.touches[0].clientX - e.touches[1].clientX,
+      e.touches[0].clientY - e.touches[1].clientY
+    );
+    const ratio = newDist / touchDist;
+    fullZoom *= ratio;
+    fullZoom = Math.max(0.3, Math.min(10, fullZoom));
+    touchDist = newDist;
+    e.preventDefault();
+  }
+}, { passive: false });
+
+fullMapEl.addEventListener("touchend", e => {
+  if (e.touches.length < 2) touchDist = 0;
+});
 
 // ===========================================================================
 //  FPS counter
@@ -1596,6 +1971,7 @@ function frame(now){
   updateRollSound(speedNow, dt, active);
 
   updateWallTex(ball.x, ball.z);
+  updateMinimap();
 
   const sX = shake > 0 ? (Math.random() - 0.5) * shake : 0;
   const sZ = shake > 0 ? (Math.random() - 0.5) * shake : 0;
