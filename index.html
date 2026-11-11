@@ -3,16 +3,35 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-<title>Minesweeper adventure</title>
+<title>Minesweeper Adventure · WebGPU</title>
 <style>
   html, body { margin:0; width:100vw; height:100vh; overflow:hidden;
     background:#050b18; font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
     touch-action:manipulation; user-select:none; -webkit-user-select:none; }
   canvas { display:block; width:100vw; height:100vh; }
   #overlay { position:fixed; inset:0; z-index:30; display:grid; place-items:center;
-    padding:20px; text-align:center; color:#e2e8f0; background:rgba(2,6,23,.78);
-    font-size:20px; line-height:1.4; cursor:pointer; backdrop-filter:blur(10px); }
+    padding:20px; text-align:center; color:#e2e8f0; background:rgba(2,6,23,.82);
+    backdrop-filter:blur(10px); }
   #overlay.hidden { display:none; }
+  .overlay-inner { display:flex; flex-direction:column; align-items:center; gap:20px;
+    max-height:calc(100vh - 40px); overflow-y:auto; padding:16px; }
+  .overlay-title { font-size:clamp(28px, 6vw, 52px); font-weight:900;
+    letter-spacing:4px; color:#e2e8f0; margin:0; text-align:center;
+    text-shadow: 0 0 20px rgba(140,90,255,1), 0 0 40px rgba(80,40,180,.8); }
+  .overlay-intro { white-space:pre-line; font-size:18px; opacity:.9; line-height:1.5; }
+  .overlay-rules { white-space:pre-line; color:#00d4ff; font-size:16px;
+    font-weight:600; text-shadow:0 0 12px rgba(0,212,255,0.6);
+    max-width:520px; line-height:1.6; }
+  .overlay-buttons { display:flex; gap:12px; flex-wrap:wrap; justify-content:center; margin-top:10px; }
+  .overlay-buttons button { background:linear-gradient(180deg, rgba(140,90,255,.35), rgba(80,40,180,.35));
+    color:#fff; border:1px solid rgba(140,90,255,.6); border-radius:10px;
+    padding:14px 24px; font-size:16px; font-weight:700; cursor:pointer;
+    transition:all .15s; min-width:140px; }
+  .overlay-buttons button:hover:not(:disabled) {
+    background:linear-gradient(180deg, rgba(160,110,255,.55), rgba(100,60,200,.55));
+    box-shadow:0 0 20px rgba(140,90,255,.4); }
+  .overlay-buttons button:disabled { opacity:.35; cursor:not-allowed; }
+
   #hud { position:fixed; top:18px; left:18px; z-index:60;
     color:#e2e8f0; font-size:26px; font-weight:700; letter-spacing:1px;
     text-shadow: 0 0 10px rgba(140,90,255,.9), 0 0 20px rgba(80,40,180,.6);
@@ -51,11 +70,15 @@
   #fullscreen-map:active { cursor:grabbing; }
   #fullscreen-canvas { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; }
 
-  #menu, #game-over { position:fixed; inset:0; z-index:50;
+  #menu, #game-over, #info-modal, #saves-modal { position:fixed; inset:0;
     display:grid; place-items:center; color:#e2e8f0;
     background:rgba(2,6,23,.82); backdrop-filter:blur(10px); }
-  #menu.hidden, #game-over.hidden { display:none; }
-  #game-over { cursor:pointer; }
+  #menu.hidden, #game-over.hidden, #info-modal.hidden, #saves-modal.hidden { display:none; }
+  #menu { z-index:50; }
+  #game-over { z-index:50; cursor:pointer; }
+  #info-modal { z-index:85; }
+  #saves-modal { z-index:86; }
+
   .panel { background:rgba(15,20,40,.95); padding:28px 34px; border-radius:16px;
     border:1px solid rgba(140,90,255,.45); box-shadow:0 0 40px rgba(80,40,180,.4);
     display:flex; flex-direction:column; gap:18px; min-width:320px; max-width:400px;
@@ -81,10 +104,20 @@
   .checkbox-row input[type=checkbox] { width:18px; height:18px;
     accent-color:#8c5aff; cursor:pointer; }
 
-  #info-modal { position:fixed; inset:0; z-index:85;
-    display:grid; place-items:center; color:#e2e8f0;
-    background:rgba(2,6,23,.85); backdrop-filter:blur(8px); }
-  #info-modal.hidden { display:none; }
+  .save-row { display:flex; gap:8px; }
+  .save-row .save-load-btn {
+    flex:1; text-align:left; font-size:14px; padding:10px 12px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .save-row .save-del-btn {
+    flex:0 0 auto; padding:8px 14px; font-size:20px; line-height:1;
+    background:linear-gradient(180deg, rgba(255,60,80,.35), rgba(180,40,60,.35));
+    border:1px solid rgba(255,60,80,.6);
+  }
+  .save-row .save-del-btn:hover {
+    background:linear-gradient(180deg, rgba(255,80,100,.55), rgba(200,60,80,.55));
+  }
+
   #charge-counter { position:fixed; bottom:24px; right:18px; z-index:60;
     color:#00d4ff; font-size:24px; font-weight:800;
     text-shadow: 0 0 12px rgba(0,200,255,0.9), 0 0 20px rgba(0,100,255,0.5);
@@ -95,7 +128,18 @@
 </style>
 </head>
 <body>
-<div id="overlay"></div>
+<div id="overlay">
+  <div class="overlay-inner">
+    <h1 class="overlay-title">MINESWEEPER<br>ADVENTURE</h1>
+    <div class="overlay-intro"></div>
+    <div class="overlay-rules"></div>
+    <div class="overlay-buttons">
+      <button id="btn-continue" disabled data-i18n="continue">Continue</button>
+      <button id="btn-load-overlay" disabled data-i18n="load">Load</button>
+      <button id="btn-newgame" data-i18n="newGame">New Game</button>
+    </div>
+  </div>
+</div>
 <div id="hud">5/5 HP</div>
 <div id="score">0</div>
 <div id="fps">— FPS</div>
@@ -119,6 +163,14 @@
   </div>
 </div>
 
+<div id="saves-modal" class="hidden">
+  <div class="panel" style="max-width:520px; min-width:360px;">
+    <h2 data-i18n="savesTitle">Saves</h2>
+    <div id="saves-list" style="display:flex; flex-direction:column; gap:8px; max-height:55vh; overflow-y:auto;"></div>
+    <button id="btn-saves-close" data-i18n="close">Close</button>
+  </div>
+</div>
+
 <div id="game-over" class="hidden">
   <div class="panel">
     <h1 data-i18n="gameOver">GAME OVER</h1>
@@ -130,6 +182,7 @@
   <div class="panel">
     <h2 data-i18n="menu">Menu</h2>
     <button id="btn-restart" data-i18n="restart">Restart (New Seed)</button>
+    <button id="btn-load-menu" data-i18n="load">Load</button>
     <div class="slider-row">
       <label><span data-i18n="sensX">X Sensitivity</span> <span id="sens-x-val">10.0°</span></label>
       <input type="range" id="sens-x" min="1" max="30" step="0.5" value="10">
@@ -163,8 +216,7 @@ const LANG = (navigator.language || navigator.userLanguage || 'en').toLowerCase(
 const T = {
   en: {
     overlayIntro: "Tilt phone / mouse to move\nLong press — Menu\nDouble tap — reset tilt",
-    overlayRules: "Find inversion charges to invert your ball with a tap anywhere\nBlue ball destroys mines but takes damage from empty cells\nSpecial glowing cells can only be destroyed after clearing all mines around them",
-    overlayAction: "Tap to start game",
+    overlayRules: "Find inversion charges to invert your ball with a tap anywhere\nBlue ball destroys mines but takes damage from empty cells\nSpecial glowing cells can only be destroyed after clearing all mines around them, their destruction saves the progress",
     menu: "Menu",
     restart: "Restart (New Seed)",
     sensX: "X Sensitivity",
@@ -176,14 +228,22 @@ const T = {
     resume: "Resume",
     info: "Info",
     ok: "OK",
+    continue: "Continue",
+    load: "Load",
+    newGame: "New Game",
+    close: "Close",
+    delete: "Delete",
+    savesTitle: "Saves",
+    noSaves: "No saves yet",
     gameOver: "GAME OVER",
     tapToOpenMenu: "Tap to open menu",
     infoTitle: "Info",
+    progressSaved: "PROGRESS SAVED",
+    loadFailed: "Failed to load save",
   },
   ru: {
     overlayIntro: "Управление наклоном телефона/мышкой\nЗажатие — Меню\nДва тапа — обнулить наклон",
-    overlayRules: "Найдя инверсионные заряды можно инвертировать шар тапнув в любом месте\nГолубой шар уничтожает мины но получает урон от клеток без мин\nОсобые сияющие клетки можно разрушить лишь уничтожив все мины вокруг них",
-    overlayAction: "Нажми, чтобы начать игру",
+    overlayRules: "Найдя инверсионные заряды можно инвертировать шар тапнув в любом месте\nГолубой шар уничтожает мины но получает урон от клеток без мин\nОсобые сияющие клетки можно разрушить лишь уничтожив все мины вокруг них, их уничтожение сохраняет прогресс",
     menu: "Меню",
     restart: "Заново (новый сид)",
     sensX: "X Чувствительность",
@@ -195,9 +255,18 @@ const T = {
     resume: "Продолжить",
     info: "Инфо",
     ok: "ОК",
+    continue: "Продолжить",
+    load: "Загрузить",
+    newGame: "Новая игра",
+    close: "Закрыть",
+    delete: "Удалить",
+    savesTitle: "Сохранения",
+    noSaves: "Пока нет сохранений",
     gameOver: "КОНЕЦ ИГРЫ",
     tapToOpenMenu: "Нажми, чтобы открыть меню",
     infoTitle: "Информация",
+    progressSaved: "ПРОГРЕСС СОХРАНЁН",
+    loadFailed: "Не удалось загрузить сохранение",
   }
 };
 const L = T[LANG];
@@ -259,6 +328,9 @@ const BIOME_PALETTE = [
   [143,  32, 207],
 ];
 
+const SAVE_MAGIC = 0x4D534144; // "MSAD"
+const SAVE_VERSION = 1;
+
 let camHeight = CAM_HEIGHT_BASE;
 let fovDeg = FOV_DEG_BASE;
 let isTouchPrimary = false;
@@ -292,8 +364,292 @@ let globalTime = 0;
 let inversionCharges = 0;
 let isInverted = false;
 let invertFlash = 0;
-let modalOpen = false;
+let infoModalOpen = false;
+let savesModalOpen = false;
 let bonusOrbs = [];
+
+// ===========================================================================
+//  IndexedDB
+// ===========================================================================
+const DB_NAME = 'minesweeper_adventure';
+const DB_STORE = 'saves';
+let db = null;
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const d = req.result;
+      if (!d.objectStoreNames.contains(DB_STORE)) {
+        const store = d.createObjectStore(DB_STORE, { keyPath: 'id', autoIncrement: true });
+        store.createIndex('timestamp', 'timestamp');
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function initDB() {
+  try { db = await openDB(); }
+  catch(e) { console.error('IndexedDB init failed:', e); db = null; }
+}
+
+function dbPut(record) {
+  if (!db) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, 'readwrite');
+    const req = tx.objectStore(DB_STORE).add(record);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function dbAll() {
+  if (!db) return Promise.resolve([]);
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, 'readonly');
+    const req = tx.objectStore(DB_STORE).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function dbGet(id) {
+  if (!db) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, 'readonly');
+    const req = tx.objectStore(DB_STORE).get(id);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function dbDelete(id) {
+  if (!db) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, 'readwrite');
+    const req = tx.objectStore(DB_STORE).delete(id);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
+// ===========================================================================
+//  Serialize / deserialize
+// ===========================================================================
+function serializeState() {
+  const dArr = [];
+  for (const k of destroyedWalls) {
+    const c = k.indexOf(',');
+    dArr.push([parseInt(k.slice(0, c), 10), parseInt(k.slice(c + 1), 10)]);
+  }
+  const vArr = [];
+  for (const k of visitedCells) {
+    const c = k.indexOf(',');
+    vArr.push([parseInt(k.slice(0, c), 10), parseInt(k.slice(c + 1), 10)]);
+  }
+
+  const size = 4 + 1 + 4 + 4 + 1 + 2 + 1 + 4 + 4 + 4 + dArr.length * 8 + 4 + vArr.length * 8;
+  const buf = new ArrayBuffer(size);
+  const dv = new DataView(buf);
+  let o = 0;
+
+  dv.setUint32(o, SAVE_MAGIC, true); o += 4;
+  dv.setUint8(o, SAVE_VERSION); o += 1;
+  dv.setUint32(o, SEED, true); o += 4;
+  dv.setUint32(o, score, true); o += 4;
+  dv.setUint8(o, hp); o += 1;
+  dv.setUint16(o, inversionCharges, true); o += 2;
+  dv.setUint8(o, isInverted ? 1 : 0); o += 1;
+  dv.setFloat32(o, ball.x, true); o += 4;
+  dv.setFloat32(o, ball.z, true); o += 4;
+
+  dv.setUint32(o, dArr.length, true); o += 4;
+  for (const [x, z] of dArr) {
+    dv.setInt32(o, x, true); o += 4;
+    dv.setInt32(o, z, true); o += 4;
+  }
+
+  dv.setUint32(o, vArr.length, true); o += 4;
+  for (const [x, z] of vArr) {
+    dv.setInt32(o, x, true); o += 4;
+    dv.setInt32(o, z, true); o += 4;
+  }
+
+  return buf;
+}
+
+function deserializeState(buf) {
+  const dv = new DataView(buf);
+  let o = 0;
+
+  const magic = dv.getUint32(o, true); o += 4;
+  if (magic !== SAVE_MAGIC) throw new Error('Bad magic');
+  const version = dv.getUint8(o); o += 1;
+  if (version !== SAVE_VERSION) throw new Error('Unsupported version');
+
+  SEED = dv.getUint32(o, true); o += 4;
+  score = dv.getUint32(o, true); o += 4;
+  hp = dv.getUint8(o); o += 1;
+  inversionCharges = dv.getUint16(o, true); o += 2;
+  isInverted = dv.getUint8(o) === 1; o += 1;
+  ball.x = dv.getFloat32(o, true); o += 4;
+  ball.z = dv.getFloat32(o, true); o += 4;
+
+  destroyedWalls.clear();
+  const dCount = dv.getUint32(o, true); o += 4;
+  for (let i = 0; i < dCount; i++) {
+    const x = dv.getInt32(o, true); o += 4;
+    const z = dv.getInt32(o, true); o += 4;
+    destroyedWalls.add(`${x},${z}`);
+  }
+
+  visitedCells.clear();
+  const vCount = dv.getUint32(o, true); o += 4;
+  for (let i = 0; i < vCount; i++) {
+    const x = dv.getInt32(o, true); o += 4;
+    const z = dv.getInt32(o, true); o += 4;
+    visitedCells.add(`${x},${z}`);
+  }
+
+  tileNumCache.clear();
+  specialWallCache.clear();
+  specialWallFlagCache.clear();
+  particles.length = 0;
+  bonusOrbs.length = 0;
+  shake = 0;
+  gameOver = false;
+  scoreCurrentlyVisible = false;
+  hpCurrentlyVisible = false;
+  invertFlash = 0;
+  ball.vx = 0; ball.vz = 0;
+  lastTexCellX = null; lastTexCellZ = null; lastTexDestroyedCount = -1;
+  lastBiomeCX = null; lastBiomeCZ = null; biomeVersion++;
+
+  document.getElementById("score").textContent = score;
+  scoreVisibleUntil = performance.now() + 3000;
+  updateHp(true);
+  updateChargeUI();
+  document.getElementById("game-over").classList.add("hidden");
+}
+
+function formatSaveName(sc, ts) {
+  const d = new Date(ts);
+  const months = LANG === 'ru'
+    ? ['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек']
+    : ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const day = d.getDate();
+  const month = months[d.getMonth()];
+  const year = d.getFullYear();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `Score: ${sc}, ${day} ${month} ${year} ${hh}:${mm}`;
+}
+
+async function saveGame() {
+  try {
+    const data = serializeState();
+    const ts = Date.now();
+    await dbPut({ score, timestamp: ts, data });
+    await updateSaveButtonsAvailability();
+  } catch(e) {
+    console.error('Save failed:', e);
+  }
+}
+
+async function loadSaveById(id) {
+  try {
+    const rec = await dbGet(id);
+    if (!rec) return false;
+    deserializeState(rec.data);
+    return true;
+  } catch(e) {
+    console.error('Load failed:', e);
+    return false;
+  }
+}
+
+// ===========================================================================
+//  Language application
+// ===========================================================================
+function applyLanguage() {
+  document.querySelectorAll("[data-i18n]").forEach(el => {
+    const k = el.dataset.i18n;
+    if (L[k] !== undefined) el.textContent = L[k];
+  });
+  document.querySelector(".overlay-intro").textContent = L.overlayIntro;
+  document.querySelector(".overlay-rules").textContent = L.overlayRules;
+
+  document.getElementById("info-content").innerHTML = `
+    <div style="white-space:pre-line; line-height:1.6;">${L.overlayIntro}</div>
+    <div style="white-space:pre-line; line-height:1.6; color:#00d4ff; margin-top:16px; text-shadow:0 0 12px rgba(0,212,255,0.6); font-weight:600;">${L.overlayRules}</div>`;
+}
+applyLanguage();
+
+// ===========================================================================
+//  Saves modal
+// ===========================================================================
+const savesModalEl = document.getElementById("saves-modal");
+const savesListEl = document.getElementById("saves-list");
+
+async function openSavesModal() {
+  savesModalOpen = true;
+  savesModalEl.classList.remove("hidden");
+  await refreshSavesList();
+}
+
+function closeSavesModal() {
+  savesModalOpen = false;
+  savesModalEl.classList.add("hidden");
+  requestWakeLock();
+}
+
+async function refreshSavesList() {
+  const records = await dbAll();
+  records.sort((a, b) => b.timestamp - a.timestamp);
+  if (records.length === 0) {
+    savesListEl.innerHTML = `<p style="text-align:center;opacity:.6;">${L.noSaves}</p>`;
+    return;
+  }
+  savesListEl.innerHTML = records.map(r => `
+    <div class="save-row" data-id="${r.id}">
+      <button class="save-load-btn">${formatSaveName(r.score, r.timestamp)}</button>
+      <button class="save-del-btn" title="${L.delete}">×</button>
+    </div>
+  `).join("");
+}
+
+savesListEl.addEventListener("click", async e => {
+  const row = e.target.closest(".save-row");
+  if (!row) return;
+  const id = parseInt(row.dataset.id, 10);
+  if (e.target.classList.contains("save-del-btn")) {
+    try {
+      await dbDelete(id);
+      await refreshSavesList();
+      await updateSaveButtonsAvailability();
+    } catch(err) { console.error(err); }
+  } else {
+    const ok = await loadSaveById(id);
+    if (!ok) { console.error('load failed'); return; }
+    closeSavesModal();
+    await requestPermissionsAndStart();
+    hideOverlay();
+    closeMenu();
+  }
+});
+
+document.getElementById("btn-saves-close").addEventListener("click", closeSavesModal);
+
+async function updateSaveButtonsAvailability() {
+  try {
+    const recs = await dbAll();
+    const has = recs.length > 0;
+    document.getElementById("btn-continue").disabled = !has;
+    document.getElementById("btn-load-overlay").disabled = !has;
+  } catch(e) { console.error(e); }
+}
 
 // ===========================================================================
 //  Minimap state
@@ -337,9 +693,7 @@ function closeFullscreenMap() {
   fullMapEl.classList.add("hidden");
   requestWakeLock();
 }
-window.addEventListener("resize", () => {
-  if (mapOpen) resizeFullscreenCanvas();
-});
+window.addEventListener("resize", () => { if (mapOpen) resizeFullscreenCanvas(); });
 
 // ===========================================================================
 //  Wake Lock
@@ -354,7 +708,7 @@ async function requestWakeLock() {
   } catch (err) { wakeLock = null; }
 }
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && !overlayVisible && !menuVisible && !mapOpen && !modalOpen) {
+  if (document.visibilityState === "visible" && !overlayVisible && !menuVisible && !mapOpen && !infoModalOpen && !savesModalOpen) {
     requestWakeLock();
   }
 });
@@ -640,34 +994,30 @@ function tileNumberCached(x, z) {
 }
 
 // ===========================================================================
-//  Floating UI Text
+//  Floating text
 // ===========================================================================
-function showFloatingText(wx, wy, wz, text, color) {
+function showFloatingText(wx, wy, wz, text, color, sx = 0, sy = 0) {
   const aspect = canvas.width / canvas.height;
   const eye = { x: ball.x, y: BALL_R + camHeight, z: ball.z + CAM_BACK };
   const target = { x: ball.x, y: BALL_R, z: ball.z };
   const { v, p } = buildViewProj(eye, target, aspect);
 
-  const viewVec = [
+  const vv = [
     v[0]*wx + v[4]*wy + v[8]*wz + v[12],
     v[1]*wx + v[5]*wy + v[9]*wz + v[13],
     v[2]*wx + v[6]*wy + v[10]*wz + v[14],
     v[3]*wx + v[7]*wy + v[11]*wz + v[15]
   ];
-  const projVec = [
-    p[0]*viewVec[0] + p[4]*viewVec[1] + p[8]*viewVec[2] + p[12]*viewVec[3],
-    p[1]*viewVec[0] + p[5]*viewVec[1] + p[9]*viewVec[2] + p[13]*viewVec[3],
-    p[2]*viewVec[0] + p[6]*viewVec[1] + p[10]*viewVec[2] + p[14]*viewVec[3],
-    p[3]*viewVec[0] + p[7]*viewVec[1] + p[11]*viewVec[2] + p[15]*viewVec[3]
+  const pv = [
+    p[0]*vv[0] + p[4]*vv[1] + p[8]*vv[2] + p[12]*vv[3],
+    p[1]*vv[0] + p[5]*vv[1] + p[9]*vv[2] + p[13]*vv[3],
+    p[2]*vv[0] + p[6]*vv[1] + p[10]*vv[2] + p[14]*vv[3],
+    p[3]*vv[0] + p[7]*vv[1] + p[11]*vv[2] + p[15]*vv[3]
   ];
+  if (pv[3] <= 0) return;
 
-  if (projVec[3] <= 0) return;
-
-  const ndcX = projVec[0] / projVec[3];
-  const ndcY = projVec[1] / projVec[3];
-
-  const screenX = (ndcX * 0.5 + 0.5) * window.innerWidth;
-  const screenY = (-ndcY * 0.5 + 0.5) * window.innerHeight;
+  const screenX = (pv[0] / pv[3] * 0.5 + 0.5) * window.innerWidth + sx;
+  const screenY = (-pv[1] / pv[3] * 0.5 + 0.5) * window.innerHeight + sy;
 
   const el = document.createElement("div");
   el.textContent = text;
@@ -685,11 +1035,9 @@ function showFloatingText(wx, wy, wz, text, color) {
   el.style.transition = "transform 5s ease-out, opacity 5s ease-out";
 
   document.body.appendChild(el);
-
   el.offsetHeight;
   el.style.transform = "translate(-50%, -200%)";
   el.style.opacity = "0";
-
   setTimeout(() => el.remove(), 5000);
 }
 
@@ -835,8 +1183,11 @@ function breakWall(x, z) {
     const wy = WALL_H + 0.5;
     const wz = (z + 0.5) * CELL;
 
-    showFloatingText(wx, wy, wz, "+1 HP", "#30ff70");
-    showFloatingText(wx, wy - 0.5, wz, "+" + scoreGain + " Score", "#ffd700");
+    showFloatingText(wx, wy, wz, "+1 HP", "#30ff70", -120, 0);
+    showFloatingText(wx, wy, wz, "+" + scoreGain + " Score", "#ffd700", 120, 0);
+    showFloatingText(wx, wy, wz, L.progressSaved, "#00d4ff", 0, 80);
+
+    saveGame();
 
     specialWallCache.clear();
     return;
@@ -1571,17 +1922,13 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
     let n = normalize(i.nrm);
     let ndl = max(dot(n, L), 0.0);
     let fres = pow(1.0 - max(dot(n, Vv), 0.0), 2.0);
-
     let baseCol = vec3<f32>(0.1, 0.75, 1.0);
     let rimCol = vec3<f32>(0.7, 0.95, 1.0);
-
     let pulse = 0.85 + 0.15 * sin(G.time * 4.0);
     let facetVar = 0.7 + 0.3 * sin(i.local.y * 10.0 + i.local.x * 5.0 + G.time * 3.0);
-
     var cc = baseCol * (0.6 + 0.6 * ndl) * facetVar * pulse;
     cc += rimCol * fres * 3.0 * pulse;
     cc += baseCol * 0.5;
-
     cc = mix(vec3<f32>(0.0), cc, fogF);
     return vec4<f32>(cc, 1.0);
   } else if (i.kind > 1.5) {
@@ -1616,9 +1963,7 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
 
     let thick = 2.0 * pow(cosV, 0.8);
     var absorbCol = vec3<f32>(1.6, 3.8, 1.1);
-    if (G.invertState > 0.5) {
-        absorbCol = vec3<f32>(4.0, 2.5, 0.6);
-    }
+    if (G.invertState > 0.5) { absorbCol = vec3<f32>(4.0, 2.5, 0.6); }
     let absorb = exp(-thick * absorbCol);
     let refrDir = refract(-Vv, n, 1.0 / 1.5);
     let throughColor = envColor(refrDir * 0.6 + vec3<f32>(0.0, -0.5, 0.0), L);
@@ -1626,17 +1971,13 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
     trans *= mix(1.0, 0.30, smoothstep(0.3, 0.95, cosV));
 
     var innerGlow = vec3<f32>(0.30, 0.09, 0.68);
-    if (G.invertState > 0.5) {
-        innerGlow = vec3<f32>(0.1, 0.5, 1.0);
-    }
+    if (G.invertState > 0.5) { innerGlow = vec3<f32>(0.1, 0.5, 1.0); }
     trans += innerGlow * (0.15 + 0.55 * (1.0 - cosV));
 
     col = mix(trans, refl, fresnel);
     let rim = pow(1.0 - cosV, 4.0);
     var rimCol = vec3<f32>(0.55, 0.22, 1.00);
-    if (G.invertState > 0.5) {
-        rimCol = vec3<f32>(0.1, 0.5, 1.0);
-    }
+    if (G.invertState > 0.5) { rimCol = vec3<f32>(0.1, 0.5, 1.0); }
     col += rimCol * rim * 1.35;
     let edge = pow(1.0 - cosV, 9.0);
     col += vec3<f32>(0.85, 0.80, 1.00) * edge * 0.8;
@@ -1654,30 +1995,22 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
       let count = i32(i.matW.z + 0.5);
       let isTop = step(0.99, faceN.y);
       let m = sevenSegCount(i.local.xz, count) * isTop;
-
       let t = 0.5 + 0.5 * sin(G.time * 1.1 + i.wpos.x * 0.35 + i.wpos.z * 0.55);
       let wallBlue = vec3<f32>(0.05, 0.22, 0.55);
       let wallCyan = vec3<f32>(0.12, 0.55, 0.95);
       let wallPulse = mix(wallBlue, wallCyan, t);
-
       var digitCol = vec3<f32>(1.0, 0.25, 0.25);
-      if (count == 0) {
-        digitCol = vec3<f32>(0.3, 1.0, 0.5);
-      }
-
+      if (count == 0) { digitCol = vec3<f32>(0.3, 1.0, 0.5); }
       let ndl = max(dot(faceN, L), 0.0);
       col = wallPulse * (0.5 + 0.5 * ndl) + digitCol * m * 2.0;
-
       let rim = pow(1.0 - max(dot(faceN, Vv), 0.0), 3.0);
       col += wallPulse * rim * 0.6 + digitCol * rim * m * 0.5;
     } else if (matType > 0.5) {
       let cellIdx = vec2<i32>(floor(i.wpos.xz / ${CELL.toFixed(2)}));
       let isLight = (((cellIdx.x >> 1) + (cellIdx.y >> 1)) & 1) == 1;
-
       let lightTile = vec3<f32>(0.20, 0.205, 0.225);
       let darkTile  = vec3<f32>(0.035, 0.038, 0.052);
       var albedo = select(lightTile, darkTile, isLight);
-
       let th = tileHash(cellIdx);
       let vein = vnoise(i.wpos * 1.3 + vec3<f32>(th * 29.0));
       let veinMask = smoothstep(0.50, 0.72, vein);
@@ -1685,23 +2018,17 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
       albedo *= 0.90 + 0.20 * vnoise(i.wpos * 4.5 + th * 7.0);
       albedo *= 0.94 + 0.12 * th;
       albedo *= biomeTintAt(cellIdx.x, cellIdx.y);
-
       let luv = fract(i.wpos.xz / ${CELL.toFixed(2)});
       let edgeDist = min(min(luv.x, 1.0 - luv.x), min(luv.y, 1.0 - luv.y));
       let grout = smoothstep(0.0, 0.022, edgeDist);
       albedo = mix(vec3<f32>(0.010, 0.010, 0.014), albedo, grout);
-
       let prox = floorProximity(i.wpos);
       ao = mix(0.40, 1.0, smoothstep(0.02, 1.20, prox));
-
-      if (fogF > 0.35) {
-        shadow = wallShadow(i.wpos, L);
-      }
+      if (fogF > 0.35) { shadow = wallShadow(i.wpos, L); }
       let ballShadowOffset = L.xz * (${BALL_R.toFixed(3)} / max(L.y, 0.01));
       let bd = length(i.wpos.xz - (G.ballPos.xz - ballShadowOffset));
       let ballShadow = mix(0.30, 1.0, smoothstep(${(BALL_R*0.5).toFixed(3)}, ${(BALL_R*2.8).toFixed(3)}, bd));
       let finalShadow = shadow * ballShadow;
-
       let digit = i32(i.matW.z + 0.5);
       var digitCol = vec3<f32>(0.0);
       var digitMask = 0.0;
@@ -1714,13 +2041,11 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
         let halo = 1.0 - smoothstep(0.42, 0.48, haloDist);
         albedo = mix(albedo, albedo + digitCol * 0.08, halo * 0.5);
       }
-
       let n = faceN;
       let ndl = max(dot(n, L), 0.0);
       let hv = normalize(L + Vv);
       let spec = pow(max(dot(n, hv), 0.0), 160.0) * 1.4;
       let fres = pow(1.0 - max(dot(n, Vv), 0.0), 4.0);
-
       col = albedo * (vec3<f32>(0.26, 0.30, 0.40) + vec3<f32>(1.0, 0.97, 0.90) * ndl * finalShadow)
           + vec3<f32>(1.0, 0.95, 0.85) * (spec * finalShadow + fres * 0.15);
       col *= ao;
@@ -1728,7 +2053,6 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
     } else {
       let n = roundedNormal(i, 0.22);
       ao = mix(0.50, 1.0, smoothstep(0.0, 1.30, i.wpos.y));
-
       var albedo = mix(vec3<f32>(0.10, 0.11, 0.13),
                        vec3<f32>(0.22, 0.23, 0.26),
                        vnoise(i.wpos * 0.7 + rnd * 17.0));
@@ -1741,15 +2065,12 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
       let mossH = 1.0 - smoothstep(0.08, 0.72, i.wpos.y);
       let moss = mossH * smoothstep(0.35, 0.65, vnoise(i.wpos * 1.8 + vec3<f32>(13.7))) * 0.75;
       albedo = mix(albedo, vec3<f32>(0.070, 0.130, 0.065), moss);
-
       let wCellX = i32(floor(i.wpos.x / ${CELL.toFixed(2)}));
       let wCellZ = i32(floor(i.wpos.z / ${CELL.toFixed(2)}));
       albedo *= biomeTintAt(wCellX, wCellZ);
-
       let ndl = max(dot(n, L), 0.0);
       let hv = normalize(L + Vv);
       let spec = pow(max(dot(n, hv), 0.0), 50.0) * 0.22;
-
       col = albedo * (vec3<f32>(0.23, 0.27, 0.37) + vec3<f32>(1.0, 0.97, 0.90) * ndl)
           + vec3<f32>(1.0) * spec;
       col *= ao;
@@ -1768,7 +2089,7 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
 const shaderModule = device.createShaderModule({ code: WGSL });
 
 // ===========================================================================
-//  Cube geometry
+//  Geometry
 // ===========================================================================
 function buildCube() {
   const faces = [
@@ -1795,18 +2116,11 @@ const cubeIdxBuf = device.createBuffer({ size: cube.i.byteLength, usage: GPUBuff
 device.queue.writeBuffer(cubeIdxBuf, 0, cube.i);
 const cubeIdxCount = cube.i.length;
 
-// ===========================================================================
-//  Crystal geometry
-// ===========================================================================
 function buildCrystal() {
   const H = 0.7, W = 0.35;
   const V = [
-    [0, H, 0],
-    [0, -H, 0],
-    [W, 0, 0],
-    [-W, 0, 0],
-    [0, 0, W],
-    [0, 0, -W],
+    [0, H, 0], [0, -H, 0],
+    [W, 0, 0], [-W, 0, 0], [0, 0, W], [0, 0, -W],
   ];
   const faces = [
     [0, 4, 2], [0, 3, 4], [0, 5, 3], [0, 2, 5],
@@ -1838,9 +2152,6 @@ const crystalIdxBuf = device.createBuffer({ size: crystal.i.byteLength, usage: G
 device.queue.writeBuffer(crystalIdxBuf, 0, crystal.i);
 const crystalIdxCount = crystal.i.length;
 
-// ===========================================================================
-//  Sphere
-// ===========================================================================
 function makeSphere(slats, slons) {
   const verts = [];
   const idx = [];
@@ -1905,9 +2216,6 @@ function buildInstances(worldX, worldZ){
   }
 }
 
-// ===========================================================================
-//  Particle instance buffer
-// ===========================================================================
 const particleBuf = device.createBuffer({ size: MAX_PARTICLES*48, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
 const particleData = new Float32Array(MAX_PARTICLES*12);
 let particleCount = 0;
@@ -1922,21 +2230,12 @@ function buildParticleInstances() {
     particleData[o+1] = p.y - sz * 0.5;
     particleData[o+2] = p.z - sz * 0.5;
     particleData[o+3] = 0;
-    particleData[o+4] = sz;
-    particleData[o+5] = sz;
-    particleData[o+6] = sz;
-    particleData[o+7] = 0;
-    particleData[o+8] = p.r;
-    particleData[o+9] = p.g;
-    particleData[o+10] = p.b;
-    particleData[o+11] = t;
+    particleData[o+4] = sz; particleData[o+5] = sz; particleData[o+6] = sz; particleData[o+7] = 0;
+    particleData[o+8] = p.r; particleData[o+9] = p.g; particleData[o+10] = p.b; particleData[o+11] = t;
     particleCount++;
   }
 }
 
-// ===========================================================================
-//  Crystal instance buffer
-// ===========================================================================
 const crystalInstBuf = device.createBuffer({ size: MAX_CRYSTALS*48, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
 const crystalInstData = new Float32Array(MAX_CRYSTALS*12);
 let crystalCount = 0;
@@ -1950,14 +2249,8 @@ function buildCrystalInstances() {
     crystalInstData[o+1] = 0.9;
     crystalInstData[o+2] = orb.z;
     crystalInstData[o+3] = 0;
-    crystalInstData[o+4] = pulse;
-    crystalInstData[o+5] = pulse;
-    crystalInstData[o+6] = pulse;
-    crystalInstData[o+7] = 0;
-    crystalInstData[o+8] = 0.0;
-    crystalInstData[o+9] = 0.0;
-    crystalInstData[o+10] = 0.0;
-    crystalInstData[o+11] = orb.t * 0.5;
+    crystalInstData[o+4] = pulse; crystalInstData[o+5] = pulse; crystalInstData[o+6] = pulse; crystalInstData[o+7] = 0;
+    crystalInstData[o+8] = 0; crystalInstData[o+9] = 0; crystalInstData[o+10] = 0; crystalInstData[o+11] = orb.t * 0.5;
     crystalCount++;
   }
 }
@@ -2045,11 +2338,8 @@ const particlePipeline = device.createRenderPipeline({
 function buildViewProj(eye, target, aspect){
   const f=norm3({x:target.x-eye.x, y:target.y-eye.y, z:target.z-eye.z});
   let up;
-  if (Math.abs(f.y) > 0.999) {
-    up = { x: 0, y: 0, z: -1 };
-  } else {
-    up = { x: 0, y: 1, z: 0 };
-  }
+  if (Math.abs(f.y) > 0.999) up = { x: 0, y: 0, z: -1 };
+  else up = { x: 0, y: 1, z: 0 };
   const r=norm3(cross3(f,up));
   const u=cross3(r,f);
   const v=new Float32Array(16);
@@ -2066,30 +2356,26 @@ function buildViewProj(eye, target, aspect){
 }
 
 // ===========================================================================
-//  Minimap drawing
+//  Minimap
 // ===========================================================================
 function drawMapOnCanvas(ctx, width, height, centerCellX, centerCellZ, scale, panX, panY) {
   ctx.fillStyle = "#050b18";
   ctx.fillRect(0, 0, width, height);
-
   const halfW = width / 2;
   const halfH = height / 2;
   const cx = centerCellX + panX / scale;
   const cz = centerCellZ + panY / scale;
   const halfCellsW = halfW / scale;
   const halfCellsH = halfH / scale;
-
   const minX = Math.floor(cx - halfCellsW) - 1;
   const maxX = Math.ceil(cx + halfCellsW) + 1;
   const minZ = Math.floor(cz - halfCellsH) - 1;
   const maxZ = Math.ceil(cz + halfCellsH) + 1;
-
   for (let z = minZ; z <= maxZ; z++) {
     for (let x = minX; x <= maxX; x++) {
       if (!visitedCells.has(`${x},${z}`)) continue;
       const px = halfW + (x - centerCellX) * scale - panX;
       const py = halfH + (z - centerCellZ) * scale - panY;
-
       if (isSolidWithDestroyed(x, z)) {
         if (isSpecialWall(x, z)) {
           ctx.fillStyle = "#00d4ff";
@@ -2107,7 +2393,6 @@ function drawMapOnCanvas(ctx, width, height, centerCellX, centerCellZ, scale, pa
         const isLight = (((x >> 1) + (z >> 1)) & 1) === 1;
         ctx.fillStyle = isLight ? "#202635" : "#12151f";
         ctx.fillRect(Math.floor(px), Math.floor(py), Math.ceil(scale), Math.ceil(scale));
-
         const num = tileNumberCached(x, z);
         if (num > 0) {
           ctx.fillStyle = num >= 5 ? "#ff8080" : num >= 3 ? "#ffb060" : "#60c0ff";
@@ -2119,12 +2404,10 @@ function drawMapOnCanvas(ctx, width, height, centerCellX, centerCellZ, scale, pa
       }
     }
   }
-
   const playerX = ball.x / CELL;
   const playerZ = ball.z / CELL;
   const ppx = halfW + (playerX - centerCellX) * scale - panX;
   const ppy = halfH + (playerZ - centerCellZ) * scale - panY;
-
   ctx.beginPath();
   ctx.arc(ppx, ppy, Math.max(3, scale * 0.3), 0, Math.PI * 2);
   ctx.fillStyle = isInverted ? "#00d4ff" : "#8c5aff";
@@ -2141,9 +2424,7 @@ function updateMinimap() {
   const R = 5;
   for (let dz = -R; dz <= R; dz++) {
     for (let dx = -R; dx <= R; dx++) {
-      if (dx*dx + dz*dz <= R*R) {
-        visitedCells.add(`${px+dx},${pz+dz}`);
-      }
+      if (dx*dx + dz*dz <= R*R) visitedCells.add(`${px+dx},${pz+dz}`);
     }
   }
   const scale = minimapSize / 21;
@@ -2153,28 +2434,6 @@ function updateMinimap() {
     drawMapOnCanvas(fullCtx, fullCanvas.width, fullCanvas.height, px + 0.5, pz + 0.5, fullScale, fullPanX, fullPanY);
   }
 }
-
-// ===========================================================================
-//  Apply language
-// ===========================================================================
-function applyLanguage() {
-  document.querySelectorAll("[data-i18n]").forEach(el => {
-    const k = el.dataset.i18n;
-    if (L[k] !== undefined) el.textContent = L[k];
-  });
-
-  const ov = document.getElementById("overlay");
-  ov.innerHTML = `<div style="max-height:calc(100vh - 60px); overflow-y:auto; text-align:center; padding:8px 4px;">
-    <div style="white-space:pre-line;">${L.overlayIntro}</div>
-    <div style="white-space:pre-line; color:#00d4ff; margin:20px 0; text-shadow:0 0 12px rgba(0,212,255,0.6); font-size:18px; font-weight:600;">${L.overlayRules}</div>
-    <div style="white-space:pre-line; margin-top:8px;">${L.overlayAction}</div>
-  </div>`;
-
-  document.getElementById("info-content").innerHTML = `
-    <div style="white-space:pre-line; line-height:1.6;">${L.overlayIntro}</div>
-    <div style="white-space:pre-line; line-height:1.6; color:#00d4ff; margin-top:16px; text-shadow:0 0 12px rgba(0,212,255,0.6); font-weight:600;">${L.overlayRules}</div>`;
-}
-applyLanguage();
 
 // ===========================================================================
 //  UI
@@ -2241,8 +2500,6 @@ function restart() {
   inversionCharges = 0;
   isInverted = false;
   invertFlash = 0;
-  modalOpen = false;
-  infoModalEl.classList.add("hidden");
   updateChargeUI();
   ball.x = CELL * (SPAWN_CELL_X + 0.5);
   ball.z = CELL * (SPAWN_CELL_Z + 0.5);
@@ -2259,25 +2516,51 @@ function restart() {
   requestWakeLock();
 }
 
-overlay.addEventListener("click", ()=>{
+async function requestPermissionsAndStart() {
   initAudio();
   requestWakeLock();
   let pr = Promise.resolve("granted");
-  if("DeviceMotionEvent" in window && typeof DeviceMotionEvent.requestPermission === "function")
+  if ("DeviceMotionEvent" in window && typeof DeviceMotionEvent.requestPermission === "function")
     pr = DeviceMotionEvent.requestPermission();
-  pr.then(res=>{
-    if((res==="granted"||res===undefined) && "DeviceMotionEvent" in window)
+  try {
+    const res = await pr;
+    if ((res === "granted" || res === undefined) && "DeviceMotionEvent" in window)
       window.addEventListener("devicemotion", onMotion);
-    if(res==="granted") sensorState.motionEnabled = true;
-    hideOverlay();
-  }).catch(()=>hideOverlay());
-});
+    if (res === "granted") sensorState.motionEnabled = true;
+  } catch(e) {}
+}
 
+async function startNewGame() {
+  restart();
+  await requestPermissionsAndStart();
+  hideOverlay();
+}
+
+async function continueLatest() {
+  const saves = await dbAll();
+  if (saves.length === 0) return;
+  saves.sort((a, b) => b.timestamp - a.timestamp);
+  const ok = await loadSaveById(saves[0].id);
+  if (!ok) return;
+  await requestPermissionsAndStart();
+  hideOverlay();
+  closeMenu();
+}
+
+// Overlay buttons
+document.getElementById("btn-continue").addEventListener("click", continueLatest);
+document.getElementById("btn-load-overlay").addEventListener("click", openSavesModal);
+document.getElementById("btn-newgame").addEventListener("click", startNewGame);
+
+// Game over → menu
+gameOverEl.addEventListener("click", () => { openMenu(); });
+
+// Long-press → menu, tap logic
 let pressTimer = null, pressActive = false, pressFired = false;
 let lastTapTime = 0;
 
 canvas.addEventListener("pointerdown", () => {
-  if (overlayVisible || menuVisible || modalOpen) return;
+  if (overlayVisible || menuVisible || infoModalOpen || savesModalOpen) return;
   pressActive = true;
   pressFired = false;
   pressTimer = setTimeout(() => {
@@ -2298,7 +2581,7 @@ canvas.addEventListener("pointerup", () => {
   const wasTap = pressActive && !pressFired;
   cancelPress();
   if (!wasTap) return;
-  if (overlayVisible || menuVisible || gameOver || modalOpen) return;
+  if (overlayVisible || menuVisible || gameOver || infoModalOpen || savesModalOpen) return;
 
   if (inversionCharges > 0) {
     isInverted = !isInverted;
@@ -2322,19 +2605,20 @@ canvas.addEventListener("pointerup", () => {
 canvas.addEventListener("pointercancel", cancelPress);
 canvas.addEventListener("pointerleave", cancelPress);
 
-gameOverEl.addEventListener("click", ()=>{ openMenu(); });
-
+// Menu buttons
 document.getElementById("btn-restart").addEventListener("click", () => { restart(); closeMenu(); });
 document.getElementById("btn-close").addEventListener("click", closeMenu);
+document.getElementById("btn-load-menu").addEventListener("click", openSavesModal);
 document.getElementById("btn-info").addEventListener("click", () => {
-  modalOpen = true;
+  infoModalOpen = true;
   infoModalEl.classList.remove("hidden");
 });
 document.getElementById("btn-info-ok").addEventListener("click", () => {
-  modalOpen = false;
+  infoModalOpen = false;
   infoModalEl.classList.add("hidden");
   requestWakeLock();
 });
+
 document.getElementById("sens-x").addEventListener("input", (e) => {
   sensX = parseFloat(e.target.value);
   document.getElementById("sens-x-val").textContent = sensX.toFixed(1) + "°";
@@ -2343,12 +2627,8 @@ document.getElementById("sens-y").addEventListener("input", (e) => {
   sensY = parseFloat(e.target.value);
   document.getElementById("sens-y-val").textContent = sensY.toFixed(1) + "°";
 });
-document.getElementById("invert-x").addEventListener("change", (e) => {
-  invertX = e.target.checked;
-});
-document.getElementById("invert-y").addEventListener("change", (e) => {
-  invertY = e.target.checked;
-});
+document.getElementById("invert-x").addEventListener("change", (e) => { invertX = e.target.checked; });
+document.getElementById("invert-y").addEventListener("change", (e) => { invertY = e.target.checked; });
 document.getElementById("minimap-chk").addEventListener("change", (e) => {
   minimapVisible = e.target.checked;
   minimapWrap.style.display = minimapVisible ? "block" : "none";
@@ -2487,10 +2767,7 @@ fullMapEl.addEventListener("pointerup", e => {
 });
 fullMapEl.addEventListener("pointercancel", e => {
   fullMapPointers.delete(e.pointerId);
-  if (fullMapPointers.size === 0) {
-    isPanning = false;
-    touchDist = 0;
-  }
+  if (fullMapPointers.size === 0) { isPanning = false; touchDist = 0; }
 });
 fullMapEl.addEventListener("wheel", e => {
   e.preventDefault();
@@ -2499,15 +2776,14 @@ fullMapEl.addEventListener("wheel", e => {
 }, { passive: false });
 
 // ===========================================================================
-//  FPS counter
+//  FPS
 // ===========================================================================
 let fpsAcc = 0, fpsFrames = 0;
 function updateFps(dt) {
   fpsAcc += dt;
   fpsFrames++;
   if (fpsAcc >= 0.25) {
-    const fps = fpsFrames / fpsAcc;
-    fpsEl.textContent = `${fps.toFixed(0)} FPS`;
+    fpsEl.textContent = `${(fpsFrames / fpsAcc).toFixed(0)} FPS`;
     fpsAcc = 0;
     fpsFrames = 0;
   }
@@ -2526,7 +2802,7 @@ function frame(now){
   updateHpVisibility();
   updateScoreVisibility();
 
-  const active = !overlayVisible && !menuVisible && !gameOver && !mapOpen && !modalOpen;
+  const active = !overlayVisible && !menuVisible && !gameOver && !mapOpen && !infoModalOpen && !savesModalOpen;
   if (active) {
     stepBall(dt);
     updateParticles(dt);
@@ -2535,8 +2811,7 @@ function frame(now){
     for (const orb of bonusOrbs) orb.t += dt * 0.3;
   }
 
-  if (shake > 0.01) shake *= Math.exp(-6 * dt);
-  else shake = 0;
+  if (shake > 0.01) shake *= Math.exp(-6 * dt); else shake = 0;
 
   const speedNow = Math.hypot(ball.vx, ball.vz);
   updateRollSound(speedNow, dt, active);
@@ -2570,14 +2845,10 @@ function frame(now){
   device.queue.writeBuffer(instBuf,0,instData.subarray(0,instCount*12));
 
   buildParticleInstances();
-  if (particleCount > 0) {
-    device.queue.writeBuffer(particleBuf,0,particleData.subarray(0,particleCount*12));
-  }
+  if (particleCount > 0) device.queue.writeBuffer(particleBuf,0,particleData.subarray(0,particleCount*12));
 
   buildCrystalInstances();
-  if (crystalCount > 0) {
-    device.queue.writeBuffer(crystalInstBuf, 0, crystalInstData.subarray(0, crystalCount*12));
-  }
+  if (crystalCount > 0) device.queue.writeBuffer(crystalInstBuf, 0, crystalInstData.subarray(0, crystalCount*12));
 
   const enc=device.createCommandEncoder();
   const pass=enc.beginRenderPass({
@@ -2629,6 +2900,14 @@ function frame(now){
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
+
+// ===========================================================================
+//  Init DB and buttons
+// ===========================================================================
+(async () => {
+  await initDB();
+  await updateSaveButtonsAvailability();
+})();
 </script>
 </body>
 </html>
