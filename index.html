@@ -47,12 +47,19 @@
   .slider-row label span { color:#b8a0ff; font-weight:600; font-variant-numeric:tabular-nums; }
   input[type=range] { width:100%; accent-color:#8c5aff; }
   .hint { font-size:13px; opacity:.55; text-align:center; margin-top:-6px; }
+
+  /* ---- Чекбоксы Invert X / Invert Y ---- */
+  .checkbox-row { display:flex; gap:22px; justify-content:center; margin-top:-4px; }
+  .checkbox-row label { display:flex; align-items:center; gap:8px;
+    font-size:15px; opacity:.9; cursor:pointer; user-select:none; }
+  .checkbox-row input[type=checkbox] { width:18px; height:18px;
+    accent-color:#8c5aff; cursor:pointer; }
 </style>
 </head>
 <body>
 <div id="overlay">Управление наклоном телефона/мышкой
 Зажатие — Меню
-Два тапа — обнулить наклон
+Два тапа — обнулить наклон (текущее положение = нейтраль)
 
 Нажми, чтобы начать игру</div>
 <div id="hud">5/5 HP</div>
@@ -79,6 +86,10 @@
       <input type="range" id="sens-y" min="1" max="30" step="0.5" value="15">
     </div>
     <div class="hint">Сколько градусов наклонить телефон для макс. скорости</div>
+    <div class="checkbox-row">
+      <label><input type="checkbox" id="invert-x"> Invert X</label>
+      <label><input type="checkbox" id="invert-y"> Invert Y</label>
+    </div>
     <button id="btn-close">Resume</button>
   </div>
 </div>
@@ -124,9 +135,9 @@ const FOV_DEG_BASE = 55;
 const FOV_DEG_MAX = 80;
 const MIN_HORIZ_CELLS = 4.5;
 
-// --- Фикс шиноби-бага: стены заходят на соседние клетки пола ---
-const WALL_PAD_XZ = 0.02;   // 2 см в X и Z
-const WALL_PAD_DOWN = 0.20; // 20 см вниз, ниже уровня пола
+// --- Фикс шиноби-бага ---
+const WALL_PAD_XZ = 0.02;
+const WALL_PAD_DOWN = 0.20;
 
 let camHeight = CAM_HEIGHT_BASE;
 let fovDeg = FOV_DEG_BASE;
@@ -145,6 +156,8 @@ let gameOver = false;
 let menuVisible = false;
 let sensX = 10.0;
 let sensY = 15.0;
+let invertX = false;
+let invertY = false;
 let shake = 0;
 
 // ===========================================================================
@@ -678,8 +691,11 @@ function currentTilt(){
     if (s) {
       const dead = Math.max(MIN_DEAD_DEG, Math.min(sensX, sensY) * DEAD_FRAC);
       const d = applyPhysicalDeadZone(s.tx, s.ty, dead);
-      const tx = d.tx / Math.max(sensX, 0.1) * MAX_TILT_DEG;
-      const ty = d.ty / Math.max(sensY, 0.1) * MAX_TILT_DEG;
+      let tx = d.tx / Math.max(sensX, 0.1) * MAX_TILT_DEG;
+      let ty = d.ty / Math.max(sensY, 0.1) * MAX_TILT_DEG;
+      // Инверсия осей — применяется после масштабирования, до компаундирования
+      if (invertX) tx = -tx;
+      if (invertY) ty = -ty;
       const mag = Math.hypot(tx, ty);
       if (mag < 0.3) return { tx: 0, ty: 0 };
       return limitTiltMag(tx, ty);
@@ -694,7 +710,11 @@ function currentTilt(){
   const mag = Math.hypot(mx, my);
   if(mag < DEAD_ZONE) return {tx:0,ty:0};
   if(mag > 1){ mx /= mag; my /= mag; }
-  return { tx: mx*MAX_TILT_DEG, ty: my*MAX_TILT_DEG };
+  let tx = mx*MAX_TILT_DEG;
+  let ty = my*MAX_TILT_DEG;
+  if (invertX) tx = -tx;
+  if (invertY) ty = -ty;
+  return { tx, ty };
 }
 
 // ===========================================================================
@@ -1270,10 +1290,6 @@ function buildInstances(worldX, worldZ){
   for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
     const rnd = (hashSeed(x, z, (SEED ^ 0xA11CE) >>> 0) & 1023) / 1023;
     if (isSolidWithDestroyed(x, z)) {
-      // ВАЖНО: стена чуть больше своей клетки — фикс шиноби-бага на стыке с полом.
-      // Вниз уходит на 0.2 ниже уровня пола, в XZ перекрывает соседей на 0.02.
-      // Коллизии/тени/цифры считаются по сетке, поэтому визуальное расширение
-      // не влияет на геймплей и логику.
       pushInst(x*CELL - WALL_PAD_XZ,
                -WALL_PAD_DOWN,
                z*CELL - WALL_PAD_XZ,
@@ -1528,6 +1544,12 @@ document.getElementById("sens-x").addEventListener("input", (e) => {
 document.getElementById("sens-y").addEventListener("input", (e) => {
   sensY = parseFloat(e.target.value);
   document.getElementById("sens-y-val").textContent = sensY.toFixed(1) + "°";
+});
+document.getElementById("invert-x").addEventListener("change", (e) => {
+  invertX = e.target.checked;
+});
+document.getElementById("invert-y").addEventListener("change", (e) => {
+  invertY = e.target.checked;
 });
 
 updateHp(false);
