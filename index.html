@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-<title>Minesweeper 3D</title>
+<title>Minesweeper 3D · WebGPU</title>
 <style>
   html, body { margin:0; width:100vw; height:100vh; overflow:hidden;
     background:#050b18; font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
@@ -20,23 +20,21 @@
     pointer-events:none; font-variant-numeric: tabular-nums;
     opacity:0; transition: opacity 0.3s ease; }
   #hud.low { color:#ff8090; text-shadow: 0 0 10px rgba(255,80,120,.9); }
-  
-  /* Score */
+
   #score { position:fixed; top:18px; left:50%; transform:translateX(-50%) translateY(-10px);
     z-index:60; color:#e2e8f0; font-size:32px; font-weight:800;
     text-shadow: 0 0 15px rgba(140,90,255,1), 0 0 30px rgba(80,40,180,.8);
     pointer-events:none; opacity:0;
     transition: opacity 0.3s ease, transform 0.3s ease; }
   #score.visible { opacity:1; transform:translateX(-50%) translateY(0); }
-  
-  /* FPS */
+
   #fps { position:fixed; top:18px; right:18px; z-index:60;
     color:#a0c8ff; font-size:15px; font-weight:600;
     text-shadow: 0 0 8px rgba(60,120,255,.7); pointer-events:none;
     font-variant-numeric: tabular-nums; opacity:.8; }
 
-  /* Minimap */
-  #minimap-wrap { position:fixed; right:18px; top:45px; z-index:40;
+  /* Миникарта — z-index выше меню, чтобы не блюрилась */
+  #minimap-wrap { position:fixed; right:18px; top:45px; z-index:60;
     width:140px; height:140px; border-radius:8px; border:1px solid rgba(140,90,255,.4);
     overflow:hidden; background:rgba(10,15,30,0.8); backdrop-filter:blur(4px);
     touch-action:none; cursor:grab; }
@@ -46,20 +44,13 @@
     cursor:nwse-resize; background:linear-gradient(135deg, transparent 50%, rgba(140,90,255,0.8) 50%);
     border-bottom-right-radius:6px; }
 
-  /* Fullscreen Map */
   #fullscreen-map { position:fixed; inset:0; z-index:80;
     background:rgba(2,6,23,0.95); backdrop-filter:blur(6px);
     display:flex; justify-content:center; align-items:center;
-    touch-action:none; }
+    touch-action:none; cursor:grab; }
   #fullscreen-map.hidden { display:none; }
-  #fullscreen-canvas { width:100%; height:100%; cursor:grab; }
-  #fullscreen-canvas:active { cursor:grabbing; }
-  #close-map-btn { position:absolute; top:20px; right:20px; z-index:90;
-    width:44px; height:44px; border-radius:50%;
-    background:rgba(140,90,255,0.2); border:1px solid rgba(140,90,255,0.6);
-    color:#fff; font-size:20px; cursor:pointer;
-    display:flex; justify-content:center; align-items:center; }
-  #close-map-btn:hover { background:rgba(140,90,255,0.4); }
+  #fullscreen-map:active { cursor:grabbing; }
+  #fullscreen-canvas { width:100%; height:100%; pointer-events:none; }
 
   #menu, #game-over { position:fixed; inset:0; z-index:50;
     display:grid; place-items:center; color:#e2e8f0;
@@ -109,7 +100,6 @@
 </div>
 
 <div id="fullscreen-map" class="hidden">
-  <button id="close-map-btn">✕</button>
   <canvas id="fullscreen-canvas"></canvas>
 </div>
 
@@ -133,7 +123,7 @@
       <input type="range" id="sens-y" min="1" max="30" step="0.5" value="15">
     </div>
     <div class="hint">Сколько градусов наклонить телефон для макс. скорости</div>
-    
+
     <div class="checkbox-row">
       <label><input type="checkbox" id="minimap-chk" checked> Minimap</label>
     </div>
@@ -259,6 +249,7 @@ function openFullscreenMap() {
 function closeFullscreenMap() {
   mapOpen = false;
   fullMapEl.classList.add("hidden");
+  requestWakeLock();
 }
 
 window.addEventListener("resize", () => {
@@ -635,8 +626,7 @@ function breakWall(x, z) {
   const key = `${x},${z}`;
   if (destroyedWalls.has(key)) return;
   destroyedWalls.add(key);
-  
-  // Инвалидируем кэш цифр у соседей и у самой клетки
+
   tileNumCache.delete(`${x},${z}`);
   tileNumCache.delete(`${x-1},${z}`);
   tileNumCache.delete(`${x+1},${z}`);
@@ -1626,7 +1616,6 @@ function updateMinimap() {
   const px = Math.floor(ball.x / CELL);
   const pz = Math.floor(ball.z / CELL);
 
-  // Reveal fog of war
   const R = 5;
   for (let dz = -R; dz <= R; dz++) {
     for (let dx = -R; dx <= R; dx++) {
@@ -1636,11 +1625,9 @@ function updateMinimap() {
     }
   }
 
-  // Small minimap
   const scale = minimapSize / 21;
   drawMapOnCanvas(minimapCtx, minimapSize, minimapSize, px + 0.5, pz + 0.5, scale, 0, 0);
 
-  // Fullscreen map
   if (mapOpen) {
     const fullScale = 40 * fullZoom;
     drawMapOnCanvas(fullCtx, fullCanvas.width, fullCanvas.height, px + 0.5, pz + 0.5, fullScale, fullPanX, fullPanY);
@@ -1699,11 +1686,11 @@ function restart() {
   ball.z = CELL * (SPAWN_CELL_Z + 0.5);
   ball.vx = 0; ball.vz = 0;
   lastTexCellX = null; lastTexCellZ = null; lastTexDestroyedCount = -1;
-  
+
   const el = document.getElementById("score");
   el.textContent = "0";
   el.classList.remove("visible");
-  
+
   updateHp(false);
   gameOverEl.classList.add("hidden");
   requestWakeLock();
@@ -1797,14 +1784,14 @@ minimapWrap.addEventListener("pointerdown", e => {
   dragStartX = e.clientX;
   dragStartY = e.clientY;
   dragMoved = false;
-  
+
   const rect = minimapWrap.getBoundingClientRect();
   minimapX = rect.left;
   minimapY = rect.top;
   minimapWrap.style.right = "auto";
   minimapWrap.style.top = minimapY + "px";
   minimapWrap.style.left = minimapX + "px";
-  
+
   minimapWrap.setPointerCapture(e.pointerId);
 });
 
@@ -1813,7 +1800,7 @@ minimapWrap.addEventListener("pointermove", e => {
   const dx = e.clientX - dragStartX;
   const dy = e.clientY - dragStartY;
   if (Math.abs(dx) > 5 || Math.abs(dy) > 5) dragMoved = true;
-  
+
   if (dragMoved) {
     minimapX += dx;
     minimapY += dy;
@@ -1849,13 +1836,13 @@ minimapGrip.addEventListener("pointermove", e => {
   const dx = e.clientX - dragStartX;
   const dy = e.clientY - dragStartY;
   const delta = Math.max(dx, dy);
-  
+
   minimapSize = Math.max(80, Math.min(300, minimapSize + delta));
   minimapCanvas.width = minimapSize;
   minimapCanvas.height = minimapSize;
   minimapWrap.style.width = minimapSize + "px";
   minimapWrap.style.height = minimapSize + "px";
-  
+
   dragStartX = e.clientX;
   dragStartY = e.clientY;
 });
@@ -1865,37 +1852,82 @@ minimapGrip.addEventListener("pointerup", e => {
   minimapGrip.releasePointerCapture(e.pointerId);
 });
 
-// Fullscreen map interactions
-document.getElementById("close-map-btn").addEventListener("click", (e) => {
-  e.stopPropagation();
-  closeFullscreenMap();
-});
-
-let isPanning = false, lastPanX = 0, lastPanY = 0;
-let touchDist = 0;
+// ===========================================================================
+//  Fullscreen map interactions
+//  - pan: карта следует ПРОТИВОПОЛОЖНО движению пальца/мыши
+//  - tap: закрывает карту
+//  - pinch/wheel: зум
+// ===========================================================================
+const fullMapPointers = new Map();
+let fullMapDragDist = 0;
+let fullMapTapStart = 0;
+let fullMapTapX = 0, fullMapTapY = 0;
 
 fullMapEl.addEventListener("pointerdown", e => {
-  if (e.target.id === "close-map-btn") return;
-  isPanning = true;
-  lastPanX = e.clientX;
-  lastPanY = e.clientY;
+  fullMapPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (fullMapPointers.size === 1) {
+    isPanning = true;
+    lastPanX = e.clientX;
+    lastPanY = e.clientY;
+    fullMapDragDist = 0;
+    fullMapTapStart = performance.now();
+    fullMapTapX = e.clientX;
+    fullMapTapY = e.clientY;
+  } else {
+    isPanning = false;
+    const pts = [...fullMapPointers.values()];
+    touchDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+  }
   fullMapEl.setPointerCapture(e.pointerId);
 });
 
 fullMapEl.addEventListener("pointermove", e => {
-  if (!isPanning || touchDist > 0) return;
-  fullPanX += e.clientX - lastPanX;
-  fullPanY += e.clientY - lastPanY;
-  lastPanX = e.clientX;
-  lastPanY = e.clientY;
+  const p = fullMapPointers.get(e.pointerId);
+  if (!p) return;
+  p.x = e.clientX;
+  p.y = e.clientY;
+
+  if (fullMapPointers.size === 1 && isPanning) {
+    const dx = e.clientX - lastPanX;
+    const dy = e.clientY - lastPanY;
+    fullMapDragDist += Math.abs(dx) + Math.abs(dy);
+    // Инвертированное панорамирование: палец вправо → карта влево
+    fullPanX -= dx;
+    fullPanY -= dy;
+    lastPanX = e.clientX;
+    lastPanY = e.clientY;
+  } else if (fullMapPointers.size === 2 && touchDist > 0) {
+    const pts = [...fullMapPointers.values()];
+    const newDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+    if (newDist > 0) {
+      fullZoom *= newDist / touchDist;
+      fullZoom = Math.max(0.3, Math.min(10, fullZoom));
+      touchDist = newDist;
+    }
+  }
 });
 
 fullMapEl.addEventListener("pointerup", e => {
-  isPanning = false;
+  fullMapPointers.delete(e.pointerId);
+  if (fullMapPointers.size === 0) {
+    const dt = performance.now() - fullMapTapStart;
+    const dx = Math.abs(e.clientX - fullMapTapX);
+    const dy = Math.abs(e.clientY - fullMapTapY);
+    if (dt < 300 && dx < 8 && dy < 8 && fullMapDragDist < 8 && touchDist === 0) {
+      closeFullscreenMap();
+    }
+    isPanning = false;
+    touchDist = 0;
+  }
   fullMapEl.releasePointerCapture(e.pointerId);
 });
+
 fullMapEl.addEventListener("pointercancel", e => {
-  isPanning = false;
+  fullMapPointers.delete(e.pointerId);
+  if (fullMapPointers.size === 0) {
+    isPanning = false;
+    touchDist = 0;
+  }
   fullMapEl.releasePointerCapture(e.pointerId);
 });
 
@@ -1904,33 +1936,6 @@ fullMapEl.addEventListener("wheel", e => {
   fullZoom *= e.deltaY > 0 ? 0.9 : 1.1;
   fullZoom = Math.max(0.3, Math.min(10, fullZoom));
 }, { passive: false });
-
-fullMapEl.addEventListener("touchstart", e => {
-  if (e.touches.length === 2) {
-    touchDist = Math.hypot(
-      e.touches[0].clientX - e.touches[1].clientX,
-      e.touches[0].clientY - e.touches[1].clientY
-    );
-  }
-}, { passive: true });
-
-fullMapEl.addEventListener("touchmove", e => {
-  if (e.touches.length === 2 && touchDist > 0) {
-    const newDist = Math.hypot(
-      e.touches[0].clientX - e.touches[1].clientX,
-      e.touches[0].clientY - e.touches[1].clientY
-    );
-    const ratio = newDist / touchDist;
-    fullZoom *= ratio;
-    fullZoom = Math.max(0.3, Math.min(10, fullZoom));
-    touchDist = newDist;
-    e.preventDefault();
-  }
-}, { passive: false });
-
-fullMapEl.addEventListener("touchend", e => {
-  if (e.touches.length < 2) touchDist = 0;
-});
 
 // ===========================================================================
 //  FPS counter
@@ -1958,7 +1963,8 @@ function frame(now){
   updateFps(dt);
   updateHpVisibility();
 
-  const active = !overlayVisible && !menuVisible && !gameOver;
+  // Игра на паузе, когда открыта полноэкранная карта
+  const active = !overlayVisible && !menuVisible && !gameOver && !mapOpen;
   if (active) {
     stepBall(dt);
     updateParticles(dt);
