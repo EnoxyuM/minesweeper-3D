@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-<title>Minesweeper 3D</title>
+<title>Minesweeper 3D · WebGPU</title>
 <style>
   html, body { margin:0; width:100vw; height:100vh; overflow:hidden;
     background:#050b18; font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
@@ -33,7 +33,7 @@
     text-shadow: 0 0 8px rgba(60,120,255,.7); pointer-events:none;
     font-variant-numeric: tabular-nums; opacity:.8; }
 
-  /* Миникарта — z-index выше меню, чтобы не блюрилась */
+  /* Миникарта */
   #minimap-wrap { position:fixed; right:18px; top:45px; z-index:60;
     width:140px; height:140px; border-radius:8px; border:1px solid rgba(140,90,255,.4);
     overflow:hidden; background:rgba(10,15,30,0.8); backdrop-filter:blur(4px);
@@ -81,17 +81,31 @@
     font-size:15px; opacity:.9; cursor:pointer; user-select:none; }
   .checkbox-row input[type=checkbox] { width:18px; height:18px;
     accent-color:#8c5aff; cursor:pointer; }
+
+  /* Новые UI элементы */
+  #bonus-modal { position:fixed; inset:0; z-index:85;
+    display:grid; place-items:center; color:#e2e8f0;
+    background:rgba(2,6,23,.85); backdrop-filter:blur(8px); }
+  #bonus-modal.hidden { display:none; }
+  #charge-counter { position:fixed; bottom:18px; right:18px; z-index:60;
+    color:#a0c8ff; font-size:20px; font-weight:700;
+    text-shadow: 0 0 10px rgba(60,120,255,0.8);
+    pointer-events:none; font-variant-numeric: tabular-nums;
+    opacity:1; transition: opacity 0.3s; }
+  #charge-counter.low { color:#ff4060; text-shadow: 0 0 10px rgba(255,0,60,0.9); }
+  #charge-counter.hidden { display:none; }
 </style>
 </head>
 <body>
 <div id="overlay">Управление наклоном телефона/мышкой
-Зажатие — Меню
-Два тапа — обнулить наклон (текущее положение - равновесие)
+Зажатие — меню
+Два тапа — обнулить наклон (текущее положение - нейтраль)
 
 Нажми, чтобы начать игру</div>
 <div id="hud">5/5 HP</div>
 <div id="score">0</div>
 <div id="fps">— FPS</div>
+<div id="charge-counter" class="hidden">Inversions: 0</div>
 <canvas id="canvas"></canvas>
 
 <div id="minimap-wrap">
@@ -101,6 +115,13 @@
 
 <div id="fullscreen-map" class="hidden">
   <canvas id="fullscreen-canvas"></canvas>
+</div>
+
+<div id="bonus-modal" class="hidden">
+  <div class="panel" style="max-width: 450px;">
+    <p id="bonus-text" style="line-height: 1.5; margin:0;"></p>
+    <button id="btn-bonus-ok">OK</button>
+  </div>
 </div>
 
 <div id="game-over" class="hidden">
@@ -180,6 +201,11 @@ const MIN_HORIZ_CELLS = 4.5;
 const WALL_PAD_XZ = 0.02;
 const WALL_PAD_DOWN = 0.20;
 
+// --- Новые механики ---
+const ORB_DROP_CHANCE = 0.02; // 2% шанс дропа
+const SPECIAL_WALL_CHANCE = 0.005; // 0.5% шанс особой стены
+const SPECIAL_WALL_RADIUS = 10;
+
 let camHeight = CAM_HEIGHT_BASE;
 let fovDeg = FOV_DEG_BASE;
 let isTouchPrimary = false;
@@ -194,6 +220,7 @@ let SEED = (Math.random() * 0xFFFFFFFF) >>> 0;
 const destroyedWalls = new Set();
 const visitedCells = new Set();
 const tileNumCache = new Map();
+const specialWallCache = new Map();
 let hp = INITIAL_HP;
 let score = 0;
 let scoreTimeout = null;
@@ -206,6 +233,13 @@ let sensY = 15.0;
 let invertX = false;
 let invertY = false;
 let shake = 0;
+
+// --- Inversion state ---
+let inversionCharges = 0;
+let isInverted = false;
+let invertFlash = 0;
+let bonusModalOpen = false;
+let bonusOrbs = [];
 
 // ===========================================================================
 //  Minimap state
@@ -271,7 +305,7 @@ async function requestWakeLock() {
   }
 }
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && !overlayVisible && !menuVisible) {
+  if (document.visibilityState === "visible" && !overlayVisible && !menuVisible && !mapOpen && !bonusModalOpen) {
     requestWakeLock();
   }
 });
@@ -332,7 +366,6 @@ function updateRollSound(speed, dt, active) {
 function playBreakSound() {
   if (!audioCtx) return;
   const t = audioCtx.currentTime;
-
   const osc = audioCtx.createOscillator();
   osc.type = "sine";
   osc.frequency.setValueAtTime(110 + Math.random() * 50, t);
@@ -341,8 +374,7 @@ function playBreakSound() {
   og.gain.setValueAtTime(0.08, t);
   og.gain.exponentialRampToValueAtTime(0.001, t + 0.20);
   osc.connect(og).connect(audioCtx.destination);
-  osc.start(t);
-  osc.stop(t + 0.22);
+  osc.start(t); osc.stop(t + 0.22);
 
   const noise = audioCtx.createBufferSource();
   noise.buffer = noiseBuffer;
@@ -353,14 +385,12 @@ function playBreakSound() {
   ng.gain.setValueAtTime(0.055, t);
   ng.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
   noise.connect(nf).connect(ng).connect(audioCtx.destination);
-  noise.start(t);
-  noise.stop(t + 0.28);
+  noise.start(t); noise.stop(t + 0.28);
 }
 
 function playExplosionSound() {
   if (!audioCtx) return;
   const t = audioCtx.currentTime;
-
   const osc = audioCtx.createOscillator();
   osc.type = "sine";
   osc.frequency.setValueAtTime(160 + Math.random() * 40, t);
@@ -369,8 +399,7 @@ function playExplosionSound() {
   og.gain.setValueAtTime(0.1875, t);
   og.gain.exponentialRampToValueAtTime(0.001, t + 0.75);
   osc.connect(og).connect(audioCtx.destination);
-  osc.start(t);
-  osc.stop(t + 0.8);
+  osc.start(t); osc.stop(t + 0.8);
 
   const tail = audioCtx.createBufferSource();
   tail.buffer = noiseBuffer;
@@ -384,8 +413,7 @@ function playExplosionSound() {
   tg.gain.setValueAtTime(0.1375, t);
   tg.gain.exponentialRampToValueAtTime(0.001, t + 0.8);
   tail.connect(tf).connect(tg).connect(audioCtx.destination);
-  tail.start(t);
-  tail.stop(t + 0.85);
+  tail.start(t); tail.stop(t + 0.85);
 
   const crack = audioCtx.createBufferSource();
   crack.buffer = noiseBuffer;
@@ -396,8 +424,35 @@ function playExplosionSound() {
   cg.gain.setValueAtTime(0.1125, t);
   cg.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
   crack.connect(cf).connect(cg).connect(audioCtx.destination);
-  crack.start(t);
-  crack.stop(t + 0.18);
+  crack.start(t); crack.stop(t + 0.18);
+}
+
+function playPickupSound() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  osc.type = "triangle";
+  osc.frequency.setValueAtTime(300, t);
+  osc.frequency.exponentialRampToValueAtTime(800, t + 0.15);
+  const og = audioCtx.createGain();
+  og.gain.setValueAtTime(0.15, t);
+  og.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+  osc.connect(og).connect(audioCtx.destination);
+  osc.start(t); osc.stop(t + 0.35);
+}
+
+function playToggleSound() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(600, t);
+  osc.frequency.exponentialRampToValueAtTime(1200, t + 0.1);
+  const og = audioCtx.createGain();
+  og.gain.setValueAtTime(0.1, t);
+  og.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+  osc.connect(og).connect(audioCtx.destination);
+  osc.start(t); osc.stop(t + 0.2);
 }
 
 // ===========================================================================
@@ -444,7 +499,26 @@ function isSolidWithDestroyed(x, z) {
   if (destroyedWalls.has(`${x},${z}`)) return false;
   return isSolidRaw(x, z);
 }
+function isSpecialWall(x, z) {
+  if (!isSolidRaw(x, z)) return false;
+  // Exclude spawn area just in case
+  if (Math.abs(x - SPAWN_CELL_X) < 3 && Math.abs(z - SPAWN_CELL_Z) < 3) return false;
+  return (hashSeed(x, z, (SEED ^ 0x5EED) >>> 0) & 1023) < 5; // ~0.5%
+}
+function getMinesNear(x, z) {
+  const key = `${x},${z}`;
+  if (specialWallCache.has(key)) return specialWallCache.get(key);
+  let count = 0;
+  for (let dz = -SPECIAL_WALL_RADIUS; dz <= SPECIAL_WALL_RADIUS; dz++) {
+    for (let dx = -SPECIAL_WALL_RADIUS; dx <= SPECIAL_WALL_RADIUS; dx++) {
+      if (hasMineRaw(x + dx, z + dz)) count++;
+    }
+  }
+  specialWallCache.set(key, count);
+  return count;
+}
 function hasMineRaw(x, z) {
+  if (isSpecialWall(x, z)) return false; // special walls don't have mines
   const sdx = x - SPAWN_CELL_X;
   const sdz = z - SPAWN_CELL_Z;
   if (sdx * sdx + sdz * sdz <= SPAWN_MINE_SAFE_RADIUS_SQ) return false;
@@ -491,77 +565,50 @@ function spawnParticle(x, y, z, vx, vy, vz, size, r, g, b, life) {
   particles.push({ x, y, z, vx, vy, vz, size, r, g, b, life, maxLife: life });
 }
 
-function spawnBreakParticles(wx, wz, isMine) {
+function spawnBreakParticles(wx, wz, isMine, isSpecial = false) {
   const cx = (wx + 0.5) * CELL;
   const cz = (wz + 0.5) * CELL;
 
-  if (isMine) {
+  if (isSpecial) {
+    for (let i = 0; i < 50; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const spd = 2 + Math.random() * 8;
+      spawnParticle(cx, 1.3, cz, Math.cos(ang) * spd, 2 + Math.random() * 6, Math.sin(ang) * spd, 0.15, 1.0, 0.8, 0.2, 1.0);
+    }
+  } else if (isMine) {
     for (let i = 0; i < 36; i++) {
       const ang = Math.random() * Math.PI * 2;
       const spd = 2 + Math.random() * 7;
       const vy = 3 + Math.random() * 9;
-      spawnParticle(
-        cx + (Math.random() - 0.5) * 2,
-        0.3 + Math.random() * WALL_H,
-        cz + (Math.random() - 0.5) * 2,
-        Math.cos(ang) * spd, vy, Math.sin(ang) * spd,
-        0.12 + Math.random() * 0.22,
-        2.4, 0.9, 0.2,
-        0.5 + Math.random() * 0.7
-      );
+      spawnParticle(cx + (Math.random() - 0.5) * 2, 0.3 + Math.random() * WALL_H, cz + (Math.random() - 0.5) * 2,
+        Math.cos(ang) * spd, vy, Math.sin(ang) * spd, 0.12 + Math.random() * 0.22, 2.4, 0.9, 0.2, 0.5 + Math.random() * 0.7);
     }
     for (let i = 0; i < 24; i++) {
       const ang = Math.random() * Math.PI * 2;
       const spd = 5 + Math.random() * 12;
       const vy = 6 + Math.random() * 12;
-      spawnParticle(
-        cx, 0.7 + Math.random() * WALL_H, cz,
-        Math.cos(ang) * spd, vy, Math.sin(ang) * spd,
-        0.06 + Math.random() * 0.08,
-        4.0, 2.5, 0.8,
-        0.4 + Math.random() * 0.5
-      );
+      spawnParticle(cx, 0.7 + Math.random() * WALL_H, cz,
+        Math.cos(ang) * spd, vy, Math.sin(ang) * spd, 0.06 + Math.random() * 0.08, 4.0, 2.5, 0.8, 0.4 + Math.random() * 0.5);
     }
     for (let i = 0; i < 12; i++) {
       const ang = Math.random() * Math.PI * 2;
       const spd = 0.5 + Math.random() * 2;
-      spawnParticle(
-        cx + (Math.random() - 0.5) * 1.5,
-        0.5 + Math.random() * WALL_H,
-        cz + (Math.random() - 0.5) * 1.5,
-        Math.cos(ang) * spd, 1 + Math.random() * 3, Math.sin(ang) * spd,
-        0.35 + Math.random() * 0.4,
-        0.22, 0.18, 0.15,
-        1.0 + Math.random() * 0.8
-      );
+      spawnParticle(cx + (Math.random() - 0.5) * 1.5, 0.5 + Math.random() * WALL_H, cz + (Math.random() - 0.5) * 1.5,
+        Math.cos(ang) * spd, 1 + Math.random() * 3, Math.sin(ang) * spd, 0.35 + Math.random() * 0.4, 0.22, 0.18, 0.15, 1.0 + Math.random() * 0.8);
     }
   } else {
     for (let i = 0; i < 16; i++) {
       const ang = Math.random() * Math.PI * 2;
       const spd = 1 + Math.random() * 4;
       const vy = 2 + Math.random() * 5;
-      spawnParticle(
-        cx + (Math.random() - 0.5) * 2,
-        0.3 + Math.random() * WALL_H,
-        cz + (Math.random() - 0.5) * 2,
-        Math.cos(ang) * spd, vy, Math.sin(ang) * spd,
-        0.10 + Math.random() * 0.14,
-        0.80, 0.80, 0.85,
-        0.6 + Math.random() * 0.5
-      );
+      spawnParticle(cx + (Math.random() - 0.5) * 2, 0.3 + Math.random() * WALL_H, cz + (Math.random() - 0.5) * 2,
+        Math.cos(ang) * spd, vy, Math.sin(ang) * spd, 0.10 + Math.random() * 0.14, 0.80, 0.80, 0.85, 0.6 + Math.random() * 0.5);
     }
     for (let i = 0; i < 8; i++) {
       const ang = Math.random() * Math.PI * 2;
       const spd = 0.3 + Math.random() * 1.5;
-      spawnParticle(
-        cx + (Math.random() - 0.5) * 1.5,
-        0.2 + Math.random() * WALL_H * 0.5,
-        cz + (Math.random() - 0.5) * 1.5,
-        Math.cos(ang) * spd, 0.5 + Math.random() * 1.5, Math.sin(ang) * spd,
-        0.25 + Math.random() * 0.3,
-        0.50, 0.52, 0.58,
-        1.0 + Math.random() * 0.5
-      );
+      spawnParticle(cx + (Math.random() - 0.5) * 1.5, 0.2 + Math.random() * WALL_H * 0.5, cz + (Math.random() - 0.5) * 1.5,
+        Math.cos(ang) * spd, 0.5 + Math.random() * 1.5, Math.sin(ang) * spd, 0.25 + Math.random() * 0.3, 0.50, 0.52, 0.58, 1.0 + Math.random() * 0.5);
     }
   }
 }
@@ -625,6 +672,19 @@ function addScore(amount) {
 function breakWall(x, z) {
   const key = `${x},${z}`;
   if (destroyedWalls.has(key)) return;
+  
+  if (isSpecialWall(x, z)) {
+    const mineCount = getMinesNear(x, z);
+    if (mineCount > 0) return; // indestructible
+    destroyedWalls.add(key);
+    addScore(1000);
+    hp = Math.min(INITIAL_HP, hp + 1);
+    updateHp();
+    playExplosionSound();
+    spawnBreakParticles(x, z, false, true);
+    return;
+  }
+
   destroyedWalls.add(key);
 
   tileNumCache.delete(`${x},${z}`);
@@ -638,19 +698,50 @@ function breakWall(x, z) {
   tileNumCache.delete(`${x+1},${z+1}`);
 
   const isMine = hasMineRaw(x, z);
+  
   if (isMine) {
-    hp = Math.max(0, hp - 1);
-    updateHp();
-    shake = Math.max(shake, 0.5);
-    playExplosionSound();
-    if (hp <= 0) {
-      gameOver = true;
-      ball.vx = 0; ball.vz = 0;
-      document.getElementById("game-over").classList.remove("hidden");
+    specialWallCache.clear();
+  }
+
+  if (isInverted) {
+    if (isMine) {
+      inversionCharges--;
+      if (inversionCharges <= 0) {
+        inversionCharges = 0;
+        isInverted = false;
+        updateChargeUI();
+      }
+      addScore(10);
+      playExplosionSound();
+      shake = Math.max(shake, 0.5);
+    } else {
+      hp = Math.max(0, hp - 1);
+      updateHp();
+      playBreakSound();
+      if (hp <= 0) {
+        gameOver = true;
+        ball.vx = 0; ball.vz = 0;
+        document.getElementById("game-over").classList.remove("hidden");
+      }
     }
   } else {
-    playBreakSound();
-    addScore(1);
+    if (isMine) {
+      hp = Math.max(0, hp - 1);
+      updateHp();
+      playExplosionSound();
+      shake = Math.max(shake, 0.5);
+      if (hp <= 0) {
+        gameOver = true;
+        ball.vx = 0; ball.vz = 0;
+        document.getElementById("game-over").classList.remove("hidden");
+      }
+    } else {
+      addScore(1);
+      playBreakSound();
+      if (Math.random() < ORB_DROP_CHANCE) {
+        bonusOrbs.push({ x: (x + 0.5) * CELL, z: (z + 0.5) * CELL, t: 0 });
+      }
+    }
   }
   spawnBreakParticles(x, z, isMine);
 }
@@ -664,6 +755,12 @@ function checkWallBreak() {
   for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
     const wx = cx + dx, wz = cz + dz;
     if (!isSolidWithDestroyed(wx, wz)) continue;
+    
+    if (isSpecialWall(wx, wz)) {
+      const count = getMinesNear(wx, wz);
+      if (count > 0) continue; // skip indestructible walls
+    }
+
     const nx = clamp(ball.x, wx*CELL, (wx+1)*CELL);
     const nz = clamp(ball.z, wz*CELL, (wz+1)*CELL);
     const ddx = ball.x - nx, ddz = ball.z - nz;
@@ -677,6 +774,21 @@ function checkWallBreak() {
 
 function stepBall(dt) {
   checkWallBreak();
+  
+  for (let i = bonusOrbs.length - 1; i >= 0; i--) {
+    const orb = bonusOrbs[i];
+    orb.t += dt;
+    if (Math.hypot(ball.x - orb.x, ball.z - orb.z) < BALL_R + 0.5) {
+      bonusOrbs.splice(i, 1);
+      const charges = Math.floor(Math.random() * 21) + 10;
+      inversionCharges += charges;
+      bonusModalOpen = true;
+      updateChargeUI();
+      playPickupSound();
+      showBonusModal(charges);
+    }
+  }
+
   const t = currentTilt();
   ball.vx += t.tx * ACCEL_PER_DEG * dt;
   ball.vz += t.ty * ACCEL_PER_DEG * dt;
@@ -696,6 +808,23 @@ function stepBall(dt) {
     const axis = { x: ball.vz/speed, y: 0, z: -ball.vx/speed };
     ballRot = mulMat3(axisAngleMat3(axis, speed*dt/BALL_R), ballRot);
   }
+}
+
+function updateChargeUI() {
+  const el = document.getElementById("charge-counter");
+  if (inversionCharges > 0) {
+    el.classList.remove("hidden");
+    el.textContent = `Inversions: ${inversionCharges}`;
+    el.classList.toggle("low", inversionCharges <= 3);
+  } else {
+    el.classList.add("hidden");
+  }
+}
+
+function showBonusModal(charges) {
+  const el = document.getElementById("bonus-text");
+  el.textContent = `You got ${charges} inversion charges! Tap once to invert your ball. Inverted ball can destroy cells with mines. But if you will hit cell without mine in inverted state - you will lose one HP. Each destroyed mine decreaces inversion charges.`;
+  document.getElementById("bonus-modal").classList.remove("hidden");
 }
 
 // ===========================================================================
@@ -941,8 +1070,8 @@ struct Globals {
   _pad4   : f32,
   ballCellX : i32,
   ballCellZ : i32,
-  _pad5 : u32,
-  _pad6 : u32,
+  invertState : f32,
+  invertFlash : f32,
 };
 @group(0) @binding(0) var<uniform> G : Globals;
 @group(0) @binding(1) var wallTex : texture_2d<f32>;
@@ -1221,20 +1350,36 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
     refl += vec3<f32>(0.10, 0.05, 0.22) * max(-n.y, 0.0);
 
     let thick = 2.0 * pow(cosV, 0.8);
-    let absorb = exp(-thick * vec3<f32>(1.6, 3.8, 1.1));
+    var absorbCol = vec3<f32>(1.6, 3.8, 1.1);
+    if (G.invertState > 0.5) {
+        absorbCol = vec3<f32>(3.5, 1.0, 1.0); // поглощает красный, оставляет синий/голубой
+    }
+    let absorb = exp(-thick * absorbCol);
     let refrDir = refract(-Vv, n, 1.0 / 1.5);
     let throughColor = envColor(refrDir * 0.6 + vec3<f32>(0.0, -0.5, 0.0), L);
     var trans = throughColor * absorb * 1.7;
     trans *= mix(1.0, 0.30, smoothstep(0.3, 0.95, cosV));
-    trans += vec3<f32>(0.30, 0.09, 0.68) * (0.15 + 0.55 * (1.0 - cosV));
+    
+    var innerGlow = vec3<f32>(0.30, 0.09, 0.68);
+    if (G.invertState > 0.5) {
+        innerGlow = vec3<f32>(0.0, 0.8, 1.0);
+    }
+    trans += innerGlow * (0.15 + 0.55 * (1.0 - cosV));
 
     col = mix(trans, refl, fresnel);
     let rim = pow(1.0 - cosV, 4.0);
-    col += vec3<f32>(0.55, 0.22, 1.00) * rim * 1.35;
+    var rimCol = vec3<f32>(0.55, 0.22, 1.00);
+    if (G.invertState > 0.5) {
+        rimCol = vec3<f32>(0.2, 0.8, 1.0);
+    }
+    col += rimCol * rim * 1.35;
     let edge = pow(1.0 - cosV, 9.0);
     col += vec3<f32>(0.85, 0.80, 1.00) * edge * 0.8;
     let sparkN = fbm2(i.local * 7.0 + Rm[0] * 4.0);
     col += vec3<f32>(0.9, 0.75, 1.0) * smoothstep(0.78, 0.96, sparkN) * rim * 0.6;
+
+    // Flash effect
+    col += vec3<f32>(0.0, 1.0, 1.0) * G.invertFlash * 15.0;
   } else {
     let faceN = normalize(i.nrm);
     let matType = i.matW.x;
@@ -1242,7 +1387,28 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
     var shadow = 1.0;
     var ao = 1.0;
 
-    if (matType > 0.5) {
+    if (matType > 1.5) {
+      // Special Wall
+      let count = i32(i.matW.z + 0.5);
+      let isTop = step(0.99, faceN.y);
+      let digit = count % 10;
+      let m = sevenSeg(i.local.xz, digit) * isTop;
+
+      var baseCol = vec3<f32>(0.3, 0.1, 0.1); // dark red
+      var glowCol = vec3<f32>(1.0, 0.2, 0.2);  // red glow
+
+      if (count == 0) {
+        baseCol = vec3<f32>(0.1, 0.3, 0.1);
+        glowCol = vec3<f32>(0.2, 1.0, 0.2);
+      }
+
+      let pulse = 0.8 + 0.2 * sin(i.wpos.x * 2.0 + i.wpos.z * 3.0 + G.camPos.x);
+      col = baseCol * (0.5 + 0.5 * max(dot(faceN, L), 0.0)) + glowCol * m * 2.0 * pulse;
+
+      // Rim light
+      let rim = pow(1.0 - max(dot(faceN, Vv), 0.0), 3.0);
+      col += glowCol * rim * 0.5;
+    } else if (matType > 0.5) {
       let cellIdx = vec2<i32>(floor(i.wpos.xz / ${CELL.toFixed(2)}));
       let isLight = (((cellIdx.x >> 1) + (cellIdx.y >> 1)) & 1) == 1;
 
@@ -1295,7 +1461,6 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
       col = albedo * (vec3<f32>(0.26, 0.30, 0.40) + vec3<f32>(1.0, 0.97, 0.90) * ndl * finalShadow)
           + vec3<f32>(1.0, 0.95, 0.85) * (spec * finalShadow + fres * 0.15);
       col *= ao;
-
       glow += digitCol * digitMask * 1.2;
     } else {
       let n = roundedNormal(i, 0.22);
@@ -1413,13 +1578,16 @@ function buildInstances(worldX, worldZ){
   for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
     const rnd = (hashSeed(x, z, (SEED ^ 0xA11CE) >>> 0) & 1023) / 1023;
     if (isSolidWithDestroyed(x, z)) {
-      pushInst(x*CELL - WALL_PAD_XZ,
-               -WALL_PAD_DOWN,
-               z*CELL - WALL_PAD_XZ,
-               CELL + 2*WALL_PAD_XZ,
-               WALL_H + WALL_PAD_DOWN,
-               CELL + 2*WALL_PAD_XZ,
-               0, rnd, 0);
+      if (isSpecialWall(x, z)) {
+        const count = getMinesNear(x, z);
+        pushInst(x*CELL - WALL_PAD_XZ, -WALL_PAD_DOWN, z*CELL - WALL_PAD_XZ,
+                 CELL + 2*WALL_PAD_XZ, WALL_H + WALL_PAD_DOWN, CELL + 2*WALL_PAD_XZ,
+                 2, rnd, count); // matType 2 = special wall
+      } else {
+        pushInst(x*CELL - WALL_PAD_XZ, -WALL_PAD_DOWN, z*CELL - WALL_PAD_XZ,
+                 CELL + 2*WALL_PAD_XZ, WALL_H + WALL_PAD_DOWN, CELL + 2*WALL_PAD_XZ,
+                 0, rnd, 0);
+      }
     } else {
       const num = tileNumberCached(x, z);
       pushInst(x*CELL, -0.15, z*CELL, CELL, 0.15, CELL, 1, rnd, num);
@@ -1451,6 +1619,27 @@ function buildParticleInstances() {
     particleData[o+9] = p.g;
     particleData[o+10] = p.b;
     particleData[o+11] = t;
+    particleCount++;
+  }
+  
+  // Рендерим бонусные сферы как светящиеся частицы
+  for (const orb of bonusOrbs) {
+    if (particleCount >= MAX_PARTICLES) break;
+    const pulse = 0.6 + 0.4 * Math.sin(orb.t * 5.0);
+    const sz = 0.8 * pulse;
+    const o = particleCount * 12;
+    particleData[o+0] = orb.x - sz * 0.5;
+    particleData[o+1] = 0.5 - sz * 0.5 + Math.sin(orb.t * 3.0) * 0.2;
+    particleData[o+2] = orb.z - sz * 0.5;
+    particleData[o+3] = 0;
+    particleData[o+4] = sz;
+    particleData[o+5] = sz;
+    particleData[o+6] = sz;
+    particleData[o+7] = 0;
+    particleData[o+8] = 0.2;
+    particleData[o+9] = 0.8;
+    particleData[o+10] = 1.0;
+    particleData[o+11] = 1.0;
     particleCount++;
   }
 }
@@ -1576,14 +1765,23 @@ function drawMapOnCanvas(ctx, width, height, centerCellX, centerCellZ, scale, pa
       const py = halfH + (z - centerCellZ) * scale - panY;
 
       if (isSolidWithDestroyed(x, z)) {
-        ctx.fillStyle = "#3a455c";
+        if (isSpecialWall(x, z)) {
+          ctx.fillStyle = "#ffcc00";
+          ctx.beginPath();
+          ctx.moveTo(px + scale/2, py);
+          ctx.lineTo(px + scale, py + scale/2);
+          ctx.lineTo(px + scale/2, py + scale);
+          ctx.lineTo(px, py + scale/2);
+          ctx.fill();
+        } else {
+          ctx.fillStyle = "#3a455c";
+          ctx.fillRect(Math.floor(px), Math.floor(py), Math.ceil(scale), Math.ceil(scale));
+        }
       } else {
         const isLight = (((x >> 1) + (z >> 1)) & 1) === 1;
         ctx.fillStyle = isLight ? "#202635" : "#12151f";
-      }
-      ctx.fillRect(Math.floor(px), Math.floor(py), Math.ceil(scale), Math.ceil(scale));
+        ctx.fillRect(Math.floor(px), Math.floor(py), Math.ceil(scale), Math.ceil(scale));
 
-      if (!isSolidWithDestroyed(x, z)) {
         const num = tileNumberCached(x, z);
         if (num > 0) {
           ctx.fillStyle = num >= 5 ? "#ff8080" : num >= 3 ? "#ffb060" : "#60c0ff";
@@ -1603,7 +1801,7 @@ function drawMapOnCanvas(ctx, width, height, centerCellX, centerCellZ, scale, pa
 
   ctx.beginPath();
   ctx.arc(ppx, ppy, Math.max(3, scale * 0.3), 0, Math.PI * 2);
-  ctx.fillStyle = "#8c5aff";
+  ctx.fillStyle = isInverted ? "#00ffff" : "#8c5aff";
   ctx.fill();
   ctx.lineWidth = Math.max(1, scale * 0.05);
   ctx.strokeStyle = "#ffffff";
@@ -1677,11 +1875,16 @@ function restart() {
   destroyedWalls.clear();
   visitedCells.clear();
   tileNumCache.clear();
+  specialWallCache.clear();
   particles.length = 0;
+  bonusOrbs.length = 0;
   shake = 0;
   hp = INITIAL_HP;
   score = 0;
   gameOver = false;
+  inversionCharges = 0;
+  isInverted = false;
+  updateChargeUI();
   ball.x = CELL * (SPAWN_CELL_X + 0.5);
   ball.z = CELL * (SPAWN_CELL_Z + 0.5);
   ball.vx = 0; ball.vz = 0;
@@ -1716,7 +1919,7 @@ let pressTimer = null, pressActive = false, pressFired = false;
 let lastTapTime = 0;
 
 canvas.addEventListener("pointerdown", () => {
-  if (overlayVisible || menuVisible) return;
+  if (overlayVisible || menuVisible || bonusModalOpen) return;
   pressActive = true;
   pressFired = false;
   pressTimer = setTimeout(() => {
@@ -1737,14 +1940,26 @@ canvas.addEventListener("pointerup", () => {
   const wasTap = pressActive && !pressFired;
   cancelPress();
   if (!wasTap) return;
-  if (overlayVisible || menuVisible || gameOver) return;
+  if (overlayVisible || menuVisible || gameOver || bonusModalOpen) return;
 
-  const now = performance.now();
-  if (now - lastTapTime < DOUBLE_TAP_MS) {
-    recalibrateTilt();
-    lastTapTime = 0;
+  if (inversionCharges > 0) {
+    isInverted = !isInverted;
+    invertFlash = 1.0;
+    playToggleSound();
+    // Спавним искры при переключении
+    for (let i = 0; i < 20; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const spd = 2 + Math.random() * 5;
+      spawnParticle(ball.x, ball.y + BALL_R, ball.z, Math.cos(ang) * spd, Math.random() * 5, Math.sin(ang) * spd, 0.1, 0.0, 1.0, 1.0, 0.6);
+    }
   } else {
-    lastTapTime = now;
+    const now = performance.now();
+    if (now - lastTapTime < DOUBLE_TAP_MS) {
+      recalibrateTilt();
+      lastTapTime = 0;
+    } else {
+      lastTapTime = now;
+    }
   }
 });
 canvas.addEventListener("pointercancel", cancelPress);
@@ -1754,6 +1969,11 @@ gameOverEl.addEventListener("click", ()=>{ openMenu(); });
 
 document.getElementById("btn-restart").addEventListener("click", () => { restart(); closeMenu(); });
 document.getElementById("btn-close").addEventListener("click", closeMenu);
+document.getElementById("btn-bonus-ok").addEventListener("click", () => {
+  bonusModalOpen = false;
+  document.getElementById("bonus-modal").classList.add("hidden");
+  requestWakeLock();
+});
 document.getElementById("sens-x").addEventListener("input", (e) => {
   sensX = parseFloat(e.target.value);
   document.getElementById("sens-x-val").textContent = sensX.toFixed(1) + "°";
@@ -1854,9 +2074,6 @@ minimapGrip.addEventListener("pointerup", e => {
 
 // ===========================================================================
 //  Fullscreen map interactions
-//  - pan: карта следует ПРОТИВОПОЛОЖНО движению пальца/мыши
-//  - tap: закрывает карту
-//  - pinch/wheel: зум
 // ===========================================================================
 const fullMapPointers = new Map();
 let fullMapDragDist = 0;
@@ -1891,7 +2108,6 @@ fullMapEl.addEventListener("pointermove", e => {
     const dx = e.clientX - lastPanX;
     const dy = e.clientY - lastPanY;
     fullMapDragDist += Math.abs(dx) + Math.abs(dy);
-    // Инвертированное панорамирование: палец вправо → карта влево
     fullPanX -= dx;
     fullPanY -= dy;
     lastPanX = e.clientX;
@@ -1963,11 +2179,12 @@ function frame(now){
   updateFps(dt);
   updateHpVisibility();
 
-  // Игра на паузе, когда открыта полноэкранная карта
-  const active = !overlayVisible && !menuVisible && !gameOver && !mapOpen;
+  // Пауза, если открыта карта, меню, game over или бонус
+  const active = !overlayVisible && !menuVisible && !gameOver && !mapOpen && !bonusModalOpen;
   if (active) {
     stepBall(dt);
     updateParticles(dt);
+    if (invertFlash > 0) invertFlash = Math.max(0, invertFlash - dt * 4);
   }
 
   if (shake > 0.01) shake *= Math.exp(-6 * dt);
@@ -1995,6 +2212,8 @@ function frame(now){
   uboData[48]=ballRot[2]; uboData[49]=ballRot[5]; uboData[50]=ballRot[8]; uboData[51]=0;
   uboDataU32[52] = lastBallCellX | 0;
   uboDataU32[53] = lastBallCellZ | 0;
+  uboData[54] = isInverted ? 1.0 : 0.0;
+  uboData[55] = invertFlash;
   device.queue.writeBuffer(ubo,0,uboData);
 
   buildInstances(ball.x, ball.z);
