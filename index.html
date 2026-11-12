@@ -244,7 +244,7 @@ const T = {
     loadFailed: "Failed to load save",
   },
   ru: {
-    overlayIntro: "Управление наклоном телефона/мышкой\nЗажатие — Меню\nДвойной тап в нижней области - обнулить наклон",
+    overlayIntro: "Управление наклоном телефона/мышкой\nЗажатие — Меню\nДвойной тап в нижней области — обнулить наклон",
     overlayRules: "Найдя инверсионные заряды можно инвертировать шар — тапни в любом месте кроме нижней области\nГолубой шар уничтожает мины но получает урон от клеток без мин\nОсобые сияющие клетки можно разрушить лишь уничтожив все мины вокруг них, их уничтожение сохраняет прогресс",
     menu: "Меню",
     restart: "Заново (новый сид)",
@@ -328,6 +328,9 @@ const WALL_PAD_DOWN = 0.20;
 const ORB_DROP_CHANCE = 0.02;
 const SPECIAL_WALL_CHANCE = 0.005;
 const SPECIAL_WALL_RADIUS = 10;
+// Визуальная раскраска биома должна покрывать квадрат подсчёта мин (Chebyshev),
+// поэтому рисуем квадратом и добавляем 1 клетку визуального запаса.
+const BIOME_PAINT_RADIUS = SPECIAL_WALL_RADIUS + 1;
 const SPECIAL_WALL_MIN_DIST = 3;
 
 const BOTTOM_ZONE_FRAC = 0.15;
@@ -1626,9 +1629,10 @@ function paintBiome(sx, sz, cx, cz) {
   const hue = (hashSeed(sx, sz, (SEED ^ 0xB10E) >>> 0) & 0xFFFF) / 65535;
   const paletteIdx = Math.floor(hue * BIOME_PALETTE.length) % BIOME_PALETTE.length;
   const [r, g, b] = BIOME_PALETTE[paletteIdx];
-  for (let dz = -SPECIAL_WALL_RADIUS; dz <= SPECIAL_WALL_RADIUS; dz++) {
-    for (let dx = -SPECIAL_WALL_RADIUS; dx <= SPECIAL_WALL_RADIUS; dx++) {
-      if (dx*dx + dz*dz > SPECIAL_WALL_RADIUS * SPECIAL_WALL_RADIUS) continue;
+  // Квадрат: совпадает с областью подсчёта в getMinesNear (Chebyshev),
+  // плюс 1 клетка визуального запаса, чтобы на границе не оставалось неприкрытых мин.
+  for (let dz = -BIOME_PAINT_RADIUS; dz <= BIOME_PAINT_RADIUS; dz++) {
+    for (let dx = -BIOME_PAINT_RADIUS; dx <= BIOME_PAINT_RADIUS; dx++) {
       const wx = sx + dx, wz = sz + dz;
       const px = wx - cx + WALL_TEX_HALF;
       const pz = wz - cz + WALL_TEX_HALF;
@@ -1658,8 +1662,10 @@ function updateBiomeTex(ballX, ballZ) {
     biomeTexData[i * 4 + 3] = 255;
     biomeDistBuf[i] = 1e9;
   }
-  for (let sz = cz - WALL_TEX_HALF - SPECIAL_WALL_RADIUS; sz <= cz + WALL_TEX_HALF + SPECIAL_WALL_RADIUS; sz++) {
-    for (let sx = cx - WALL_TEX_HALF - SPECIAL_WALL_RADIUS; sx <= cx + WALL_TEX_HALF + SPECIAL_WALL_RADIUS; sx++) {
+  // Внешний поиск расширен на BIOME_PAINT_RADIUS, чтобы подхватить
+  // спец-стены, чья раскраска дотягивается до видимой области.
+  for (let sz = cz - WALL_TEX_HALF - BIOME_PAINT_RADIUS; sz <= cz + WALL_TEX_HALF + BIOME_PAINT_RADIUS; sz++) {
+    for (let sx = cx - WALL_TEX_HALF - BIOME_PAINT_RADIUS; sx <= cx + WALL_TEX_HALF + BIOME_PAINT_RADIUS; sx++) {
       if (!isSpecialWall(sx, sz)) continue;
       paintBiome(sx, sz, cx, cz);
     }
