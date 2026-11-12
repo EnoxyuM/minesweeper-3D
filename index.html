@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-<title>Minesweeper Adventure · WebGPU</title>
+<title>Minesweeper Adventure</title>
 <style>
   html, body { margin:0; width:100vw; height:100vh; overflow:hidden;
     background:#050b18; font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
@@ -201,6 +201,7 @@
       <label><input type="checkbox" id="invert-y"> <span data-i18n="invertY">Invert Y</span></label>
     </div>
     <button id="btn-info" data-i18n="info">Info</button>
+    <button id="btn-lang">🌐 Auto</button>
     <button id="btn-close" data-i18n="resume">Resume</button>
   </div>
 </div>
@@ -209,14 +210,12 @@
 "use strict";
 
 // ===========================================================================
-//  Language
+//  Language dictionaries
 // ===========================================================================
-const LANG = (navigator.language || navigator.userLanguage || 'en').toLowerCase().startsWith('ru') ? 'ru' : 'en';
-
 const T = {
   en: {
-    overlayIntro: "Tilt phone / mouse to move\nLong press — Menu\nDouble tap near edges — reset tilt",
-    overlayRules: "Find inversion charges to invert your ball — tap near the center of the screen\nBlue ball destroys mines but takes damage from empty cells\nSpecial glowing cells can only be destroyed after clearing all mines around them, their destruction saves the progress",
+    overlayIntro: "Tilt phone / mouse to move\nLong press — Menu\nDouble tap in the bottom area — reset tilt",
+    overlayRules: "Find inversion charges to invert your ball — tap anywhere except the bottom area\nBlue ball destroys mines but takes damage from empty cells\nSpecial glowing cells can only be destroyed after clearing all mines around them, their destruction saves the progress",
     menu: "Menu",
     restart: "Restart (New Seed)",
     sensX: "X Sensitivity",
@@ -242,8 +241,8 @@ const T = {
     loadFailed: "Failed to load save",
   },
   ru: {
-    overlayIntro: "Управление наклоном телефона/мышкой\nЗажатие — Меню\nДвойной тап у краёв — обнулить наклон",
-    overlayRules: "Найдя инверсионные заряды можно инвертировать шар — тапни ближе к центру экрана\nГолубой шар уничтожает мины но получает урон от клеток без мин\nОсобые сияющие клетки можно разрушить лишь уничтожив все мины вокруг них, их уничтожение сохраняет прогресс",
+    overlayIntro: "Управление наклоном телефона/мышкой\nЗажатие — Меню\nДвойной тап в нижней области — обнулить наклон",
+    overlayRules: "Найдя инверсионные заряды можно инвертировать шар — тапни в любом месте кроме нижней области\nГолубой шар уничтожает мины но получает урон от клеток без мин\nОсобые сияющие клетки можно разрушить лишь уничтожив все мины вокруг них, их уничтожение сохраняет прогресс",
     menu: "Меню",
     restart: "Заново (новый сид)",
     sensX: "X Чувствительность",
@@ -269,7 +268,20 @@ const T = {
     loadFailed: "Не удалось загрузить сохранение",
   }
 };
-const L = T[LANG];
+
+// ===========================================================================
+//  Language init (from storage or browser)
+// ===========================================================================
+const MS_SETTINGS_KEY = 'msSettings';
+const MS_LANG_KEY = 'msLang';
+
+const BROWSER_LANG = (navigator.language || navigator.userLanguage || 'en').toLowerCase().startsWith('ru') ? 'ru' : 'en';
+let settingsLanguage = 'auto';
+try { settingsLanguage = localStorage.getItem(MS_LANG_KEY) || 'auto'; } catch(e) {}
+if (settingsLanguage !== 'auto' && settingsLanguage !== 'en' && settingsLanguage !== 'ru') settingsLanguage = 'auto';
+
+let LANG = settingsLanguage === 'auto' ? BROWSER_LANG : settingsLanguage;
+let L = T[LANG];
 
 // ===========================================================================
 //  Constants
@@ -317,9 +329,9 @@ const SPECIAL_WALL_CHANCE = 0.005;
 const SPECIAL_WALL_RADIUS = 10;
 const SPECIAL_WALL_MIN_DIST = 3;
 
-// Зона "центра" — круг радиуса CENTER_ZONE_FRAC * min(W,H) от центра экрана.
-// Тап внутри — инверсия (если есть заряды). Снаружи — двойной тап для калибровки.
-const CENTER_ZONE_FRAC = 0.35;
+// Нижние 15% экрана — зона для двойного тапа (обнуление наклона).
+// Всё остальное (включая центр) — зона для инверсии.
+const BOTTOM_ZONE_FRAC = 0.15;
 
 const BIOME_PALETTE = [
   [239,  80,  32],
@@ -371,6 +383,39 @@ let invertFlash = 0;
 let infoModalOpen = false;
 let savesModalOpen = false;
 let bonusOrbs = [];
+
+// ===========================================================================
+//  Load settings from localStorage
+// ===========================================================================
+function loadSettingsFromStorage() {
+  try {
+    const s = JSON.parse(localStorage.getItem(MS_SETTINGS_KEY) || '{}');
+    if (typeof s.sensX === 'number' && isFinite(s.sensX)) sensX = Math.max(1, Math.min(30, s.sensX));
+    if (typeof s.sensY === 'number' && isFinite(s.sensY)) sensY = Math.max(1, Math.min(30, s.sensY));
+    if (typeof s.invertX === 'boolean') invertX = s.invertX;
+    if (typeof s.invertY === 'boolean') invertY = s.invertY;
+    if (typeof s.minimapVisible === 'boolean') minimapVisible = s.minimapVisible;
+    if (typeof s.minimapSize === 'number' && isFinite(s.minimapSize)) minimapSize = Math.max(80, Math.min(300, s.minimapSize));
+    if (typeof s.minimapX === 'number' && isFinite(s.minimapX)) minimapX = s.minimapX;
+    if (typeof s.minimapY === 'number' && isFinite(s.minimapY)) minimapY = s.minimapY;
+  } catch(e) { console.warn('Settings load failed', e); }
+}
+
+function saveSettingsToStorage() {
+  try {
+    localStorage.setItem(MS_SETTINGS_KEY, JSON.stringify({
+      sensX, sensY, invertX, invertY,
+      minimapVisible, minimapSize, minimapX, minimapY
+    }));
+  } catch(e) { console.warn('Settings save failed', e); }
+}
+
+// Declare minimap state (early — loadSettingsFromStorage uses these variables)
+let minimapVisible = true;
+let minimapSize = 140;
+let minimapX = -1, minimapY = -1;
+
+loadSettingsFromStorage();
 
 // ===========================================================================
 //  IndexedDB
@@ -434,7 +479,7 @@ function dbDelete(id) {
 }
 
 // ===========================================================================
-//  Serialize / deserialize
+//  Serialize / deserialize game state
 // ===========================================================================
 function serializeState() {
   const dArr = [];
@@ -447,12 +492,10 @@ function serializeState() {
     const c = k.indexOf(',');
     vArr.push([parseInt(k.slice(0, c), 10), parseInt(k.slice(c + 1), 10)]);
   }
-
   const size = 4 + 1 + 4 + 4 + 1 + 2 + 1 + 4 + 4 + 4 + dArr.length * 8 + 4 + vArr.length * 8;
   const buf = new ArrayBuffer(size);
   const dv = new DataView(buf);
   let o = 0;
-
   dv.setUint32(o, SAVE_MAGIC, true); o += 4;
   dv.setUint8(o, SAVE_VERSION); o += 1;
   dv.setUint32(o, SEED, true); o += 4;
@@ -462,30 +505,20 @@ function serializeState() {
   dv.setUint8(o, isInverted ? 1 : 0); o += 1;
   dv.setFloat32(o, ball.x, true); o += 4;
   dv.setFloat32(o, ball.z, true); o += 4;
-
   dv.setUint32(o, dArr.length, true); o += 4;
-  for (const [x, z] of dArr) {
-    dv.setInt32(o, x, true); o += 4;
-    dv.setInt32(o, z, true); o += 4;
-  }
-
+  for (const [x, z] of dArr) { dv.setInt32(o, x, true); o += 4; dv.setInt32(o, z, true); o += 4; }
   dv.setUint32(o, vArr.length, true); o += 4;
-  for (const [x, z] of vArr) {
-    dv.setInt32(o, x, true); o += 4;
-    dv.setInt32(o, z, true); o += 4;
-  }
+  for (const [x, z] of vArr) { dv.setInt32(o, x, true); o += 4; dv.setInt32(o, z, true); o += 4; }
   return buf;
 }
 
 function deserializeState(buf) {
   const dv = new DataView(buf);
   let o = 0;
-
   const magic = dv.getUint32(o, true); o += 4;
   if (magic !== SAVE_MAGIC) throw new Error('Bad magic');
   const version = dv.getUint8(o); o += 1;
   if (version !== SAVE_VERSION) throw new Error('Unsupported version');
-
   SEED = dv.getUint32(o, true); o += 4;
   score = dv.getUint32(o, true); o += 4;
   hp = dv.getUint8(o); o += 1;
@@ -493,7 +526,6 @@ function deserializeState(buf) {
   isInverted = dv.getUint8(o) === 1; o += 1;
   ball.x = dv.getFloat32(o, true); o += 4;
   ball.z = dv.getFloat32(o, true); o += 4;
-
   destroyedWalls.clear();
   const dCount = dv.getUint32(o, true); o += 4;
   for (let i = 0; i < dCount; i++) {
@@ -501,7 +533,6 @@ function deserializeState(buf) {
     const z = dv.getInt32(o, true); o += 4;
     destroyedWalls.add(`${x},${z}`);
   }
-
   visitedCells.clear();
   const vCount = dv.getUint32(o, true); o += 4;
   for (let i = 0; i < vCount; i++) {
@@ -509,7 +540,6 @@ function deserializeState(buf) {
     const z = dv.getInt32(o, true); o += 4;
     visitedCells.add(`${x},${z}`);
   }
-
   tileNumCache.clear();
   specialWallCache.clear();
   specialWallFlagCache.clear();
@@ -523,7 +553,6 @@ function deserializeState(buf) {
   ball.vx = 0; ball.vz = 0;
   lastTexCellX = null; lastTexCellZ = null; lastTexDestroyedCount = -1;
   lastBiomeCX = null; lastBiomeCZ = null; biomeVersion++;
-
   document.getElementById("score").textContent = score;
   scoreVisibleUntil = performance.now() + 3000;
   updateHp(true);
@@ -565,6 +594,13 @@ async function loadSaveById(id) {
 // ===========================================================================
 //  Language application
 // ===========================================================================
+function updateLangButton() {
+  const btn = document.getElementById("btn-lang");
+  if (!btn) return;
+  const labels = { auto: '🌐 Auto', en: '🇬🇧 English', ru: '🇷🇺 Русский' };
+  btn.textContent = labels[settingsLanguage] || '🌐 Auto';
+}
+
 function applyLanguage() {
   document.querySelectorAll("[data-i18n]").forEach(el => {
     const k = el.dataset.i18n;
@@ -572,10 +608,10 @@ function applyLanguage() {
   });
   document.querySelector(".overlay-intro").textContent = L.overlayIntro;
   document.querySelector(".overlay-rules").textContent = L.overlayRules;
-
   document.getElementById("info-content").innerHTML = `
     <div style="white-space:pre-line; line-height:1.6;">${L.overlayIntro}</div>
     <div style="white-space:pre-line; line-height:1.6; color:#00d4ff; margin-top:16px; text-shadow:0 0 12px rgba(0,212,255,0.6); font-weight:600;">${L.overlayRules}</div>`;
+  updateLangButton();
 }
 applyLanguage();
 
@@ -643,11 +679,8 @@ async function updateSaveButtonsAvailability() {
 }
 
 // ===========================================================================
-//  Minimap state
+//  Minimap init
 // ===========================================================================
-let minimapVisible = true;
-let minimapSize = 140;
-let minimapX = -1, minimapY = -1;
 let isDraggingMinimap = false;
 let isResizingMinimap = false;
 let dragStartX = 0, dragStartY = 0, dragMoved = false;
@@ -661,6 +694,16 @@ minimapCanvas.width = minimapSize;
 minimapCanvas.height = minimapSize;
 minimapWrap.style.width = minimapSize + "px";
 minimapWrap.style.height = minimapSize + "px";
+
+if (minimapX >= 0 && minimapY >= 0) {
+  minimapX = Math.max(0, Math.min(window.innerWidth - minimapSize, minimapX));
+  minimapY = Math.max(0, Math.min(window.innerHeight - minimapSize, minimapY));
+  minimapWrap.style.right = "auto";
+  minimapWrap.style.left = minimapX + "px";
+  minimapWrap.style.top = minimapY + "px";
+}
+
+minimapWrap.style.display = minimapVisible ? "block" : "none";
 
 let mapOpen = false;
 let fullZoom = 1, fullPanX = 0, fullPanY = 0;
@@ -720,7 +763,6 @@ function initAudio() {
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC) return;
   audioCtx = new AC();
-
   const len = audioCtx.sampleRate * 2;
   noiseBuffer = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
   const data = noiseBuffer.getChannelData(0);
@@ -730,19 +772,15 @@ function initAudio() {
     last = 0.7 * last + 0.3 * white;
     data[i] = last;
   }
-
   rollSource = audioCtx.createBufferSource();
   rollSource.buffer = noiseBuffer;
   rollSource.loop = true;
-
   rollFilter = audioCtx.createBiquadFilter();
   rollFilter.type = "bandpass";
   rollFilter.frequency.value = 220;
   rollFilter.Q.value = 1.3;
-
   rollGain = audioCtx.createGain();
   rollGain.gain.value = 0;
-
   rollSource.connect(rollFilter).connect(rollGain).connect(audioCtx.destination);
   rollSource.start();
 }
@@ -769,7 +807,6 @@ function playBreakSound() {
   og.gain.exponentialRampToValueAtTime(0.001, t + 0.20);
   osc.connect(og).connect(audioCtx.destination);
   osc.start(t); osc.stop(t + 0.22);
-
   const noise = audioCtx.createBufferSource();
   noise.buffer = noiseBuffer;
   const nf = audioCtx.createBiquadFilter();
@@ -794,7 +831,6 @@ function playExplosionSound() {
   og.gain.exponentialRampToValueAtTime(0.001, t + 0.75);
   osc.connect(og).connect(audioCtx.destination);
   osc.start(t); osc.stop(t + 0.8);
-
   const tail = audioCtx.createBufferSource();
   tail.buffer = noiseBuffer;
   tail.loop = true;
@@ -808,7 +844,6 @@ function playExplosionSound() {
   tg.gain.exponentialRampToValueAtTime(0.001, t + 0.8);
   tail.connect(tf).connect(tg).connect(audioCtx.destination);
   tail.start(t); tail.stop(t + 0.85);
-
   const crack = audioCtx.createBufferSource();
   crack.buffer = noiseBuffer;
   const cf = audioCtx.createBiquadFilter();
@@ -893,7 +928,6 @@ function isSolidWithDestroyed(x, z) {
   if (destroyedWalls.has(`${x},${z}`)) return false;
   return isSolidRaw(x, z);
 }
-
 function isSpecialWall(x, z) {
   const key = `${x},${z}`;
   let v = specialWallFlagCache.get(key);
@@ -920,7 +954,6 @@ function computeIsSpecialWall(x, z) {
   }
   return true;
 }
-
 function getMinesNear(x, z) {
   const key = `${x},${z}`;
   if (specialWallCache.has(key)) return specialWallCache.get(key);
@@ -935,7 +968,6 @@ function getMinesNear(x, z) {
   specialWallCache.set(key, count);
   return count;
 }
-
 function getInitialMinesNear(x, z) {
   let count = 0;
   for (let dz = -SPECIAL_WALL_RADIUS; dz <= SPECIAL_WALL_RADIUS; dz++) {
@@ -945,7 +977,6 @@ function getInitialMinesNear(x, z) {
   }
   return count;
 }
-
 function hasMineRaw(x, z) {
   if (isSpecialWall(x, z)) return false;
   const sdx = x - SPAWN_CELL_X;
@@ -985,7 +1016,7 @@ function tileNumberCached(x, z) {
 }
 
 // ===========================================================================
-//  Floating text
+//  Floating text (with viewport clamping)
 // ===========================================================================
 function showFloatingText(wx, wy, wz, text, color, sx = 0, sy = 0) {
   const aspect = canvas.width / canvas.height;
@@ -1007,8 +1038,15 @@ function showFloatingText(wx, wy, wz, text, color, sx = 0, sy = 0) {
   ];
   if (pv[3] <= 0) return;
 
-  const screenX = (pv[0] / pv[3] * 0.5 + 0.5) * window.innerWidth + sx;
-  const screenY = (-pv[1] / pv[3] * 0.5 + 0.5) * window.innerHeight + sy;
+  const rawX = (pv[0] / pv[3] * 0.5 + 0.5) * window.innerWidth + sx;
+  const rawY = (-pv[1] / pv[3] * 0.5 + 0.5) * window.innerHeight + sy;
+
+  // Clamp to viewport so text never gets cut off. Pad is based on the shorter
+  // screen dimension to keep long labels visible.
+  const padX = Math.max(110, Math.min(window.innerWidth, window.innerHeight) * 0.2);
+  const padY = 70;
+  const screenX = Math.max(padX, Math.min(window.innerWidth - padX, rawX));
+  const screenY = Math.max(padY, Math.min(window.innerHeight - padY, rawY));
 
   const el = document.createElement("div");
   el.textContent = text;
@@ -1016,12 +1054,13 @@ function showFloatingText(wx, wy, wz, text, color, sx = 0, sy = 0) {
   el.style.left = screenX + "px";
   el.style.top = screenY + "px";
   el.style.color = color;
-  el.style.fontSize = "26px";
+  el.style.fontSize = "clamp(16px, 4.5vw, 26px)";
   el.style.fontWeight = "800";
   el.style.fontFamily = "system-ui, -apple-system, sans-serif";
   el.style.textShadow = `0 0 10px ${color}, 0 0 20px ${color}`;
   el.style.pointerEvents = "none";
   el.style.zIndex = "70";
+  el.style.whiteSpace = "nowrap";
   el.style.transform = "translate(-50%, -50%)";
   el.style.transition = "transform 5s ease-out, opacity 5s ease-out";
 
@@ -1036,16 +1075,13 @@ function showFloatingText(wx, wy, wz, text, color, sx = 0, sy = 0) {
 //  Particles
 // ===========================================================================
 const particles = [];
-
 function spawnParticle(x, y, z, vx, vy, vz, size, r, g, b, life) {
   if (particles.length >= MAX_PARTICLES) return;
   particles.push({ x, y, z, vx, vy, vz, size, r, g, b, life, maxLife: life });
 }
-
 function spawnBreakParticles(wx, wz, isMine, isSpecial = false) {
   const cx = (wx + 0.5) * CELL;
   const cz = (wz + 0.5) * CELL;
-
   if (isSpecial) {
     for (let i = 0; i < 50; i++) {
       const ang = Math.random() * Math.PI * 2;
@@ -1089,7 +1125,6 @@ function spawnBreakParticles(wx, wz, isMine, isSpecial = false) {
     }
   }
 }
-
 function updateParticles(dt) {
   for (let i = particles.length - 1; i >= 0; i--) {
     const p = particles[i];
@@ -1104,8 +1139,7 @@ function updateParticles(dt) {
     p.z += p.vz * dt;
     p.vy -= 14 * dt;
     const damp = Math.exp(-1.2 * dt);
-    p.vx *= damp;
-    p.vz *= damp;
+    p.vx *= damp; p.vz *= damp;
     if (p.y < p.size * 0.5) {
       p.y = p.size * 0.5;
       p.vy *= -0.3;
@@ -1160,10 +1194,8 @@ function breakWall(x, z) {
     const mineCount = getMinesNear(x, z);
     if (mineCount > 0) return;
     destroyedWalls.add(key);
-
     const initialMines = getInitialMinesNear(x, z);
     const scoreGain = initialMines * 30;
-
     addScore(scoreGain);
     hp = Math.min(INITIAL_HP, hp + 1);
     updateHp();
@@ -1174,18 +1206,17 @@ function breakWall(x, z) {
     const wy = WALL_H + 0.5;
     const wz = (z + 0.5) * CELL;
 
-    showFloatingText(wx, wy, wz, "+1 HP", "#30ff70", -120, 0);
-    showFloatingText(wx, wy, wz, "+" + scoreGain + " Score", "#ffd700", 120, 0);
-    showFloatingText(wx, wy, wz, L.progressSaved, "#00d4ff", 0, 80);
+    // Stack vertically so they don't get clamped to the same x position
+    showFloatingText(wx, wy, wz, "+1 HP", "#30ff70", 0, -55);
+    showFloatingText(wx, wy, wz, "+" + scoreGain + " Score", "#ffd700", 0, 0);
+    showFloatingText(wx, wy, wz, L.progressSaved, "#00d4ff", 0, 55);
 
     saveGame();
-
     specialWallCache.clear();
     return;
   }
 
   destroyedWalls.add(key);
-
   tileNumCache.delete(`${x},${z}`);
   tileNumCache.delete(`${x-1},${z}`);
   tileNumCache.delete(`${x+1},${z}`);
@@ -1202,10 +1233,7 @@ function breakWall(x, z) {
   if (isInverted) {
     if (isMine) {
       inversionCharges--;
-      if (inversionCharges <= 0) {
-        inversionCharges = 0;
-        isInverted = false;
-      }
+      if (inversionCharges <= 0) { inversionCharges = 0; isInverted = false; }
       updateChargeUI();
       addScore(10);
       playExplosionSound();
@@ -1268,7 +1296,6 @@ function checkWallBreak() {
 
 function stepBall(dt) {
   checkWallBreak();
-
   for (let i = bonusOrbs.length - 1; i >= 0; i--) {
     const orb = bonusOrbs[i];
     orb.t += dt;
@@ -1280,7 +1307,6 @@ function stepBall(dt) {
       playPickupSound();
     }
   }
-
   const t = currentTilt();
   ball.vx += t.tx * ACCEL_PER_DEG * dt;
   ball.vz += t.ty * ACCEL_PER_DEG * dt;
@@ -1303,7 +1329,7 @@ function stepBall(dt) {
 }
 
 // ===========================================================================
-//  Math helpers
+//  Math
 // ===========================================================================
 function norm3(v){ const l=Math.hypot(v.x,v.y,v.z); return l<1e-9?null:{x:v.x/l,y:v.y/l,z:v.z/l}; }
 const dot3=(a,b)=>a.x*b.x+a.y*b.y+a.z*b.z;
@@ -1464,7 +1490,6 @@ function sizeCanvas(){
   const neededTan = vertExtent / (2 * camHeight);
   const neededFovDeg = 2 * Math.atan(neededTan) * 180 / Math.PI;
   fovDeg = Math.max(FOV_DEG_BASE, Math.min(neededFovDeg, FOV_DEG_MAX));
-
   if(depthTex) depthTex.destroy();
   if(msaaTex) msaaTex.destroy();
   msaaTex=device.createTexture({
@@ -1479,9 +1504,7 @@ function sizeCanvas(){
 sizeCanvas();
 window.addEventListener("resize", sizeCanvas);
 
-// ===========================================================================
-//  Wall mask texture
-// ===========================================================================
+// Wall mask texture
 const wallTexData = new Uint8Array(WALL_TEX_SIZE * WALL_TEX_SIZE);
 const wallTex = device.createTexture({
   size: [WALL_TEX_SIZE, WALL_TEX_SIZE],
@@ -1497,8 +1520,7 @@ function updateWallTex(ballX, ballZ) {
   lastBallCellX = cx;
   lastBallCellZ = cz;
   if (cx === lastTexCellX && cz === lastTexCellZ && destroyedWalls.size === lastTexDestroyedCount) return;
-  lastTexCellX = cx;
-  lastTexCellZ = cz;
+  lastTexCellX = cx; lastTexCellZ = cz;
   lastTexDestroyedCount = destroyedWalls.size;
   for (let dz = 0; dz < WALL_TEX_SIZE; dz++) {
     const wz = cz + dz - WALL_TEX_HALF;
@@ -1509,16 +1531,12 @@ function updateWallTex(ballX, ballZ) {
     }
   }
   device.queue.writeTexture(
-    { texture: wallTex },
-    wallTexData,
-    { bytesPerRow: WALL_TEX_SIZE },
-    [WALL_TEX_SIZE, WALL_TEX_SIZE]
+    { texture: wallTex }, wallTexData,
+    { bytesPerRow: WALL_TEX_SIZE }, [WALL_TEX_SIZE, WALL_TEX_SIZE]
   );
 }
 
-// ===========================================================================
-//  Biome texture
-// ===========================================================================
+// Biome texture
 const biomeTexData = new Uint8Array(WALL_TEX_SIZE * WALL_TEX_SIZE * 4);
 const biomeDistBuf = new Float32Array(WALL_TEX_SIZE * WALL_TEX_SIZE);
 const biomeTex = device.createTexture({
@@ -1532,12 +1550,10 @@ function paintBiome(sx, sz, cx, cz) {
   const hue = (hashSeed(sx, sz, (SEED ^ 0xB10E) >>> 0) & 0xFFFF) / 65535;
   const paletteIdx = Math.floor(hue * BIOME_PALETTE.length) % BIOME_PALETTE.length;
   const [r, g, b] = BIOME_PALETTE[paletteIdx];
-
   for (let dz = -SPECIAL_WALL_RADIUS; dz <= SPECIAL_WALL_RADIUS; dz++) {
     for (let dx = -SPECIAL_WALL_RADIUS; dx <= SPECIAL_WALL_RADIUS; dx++) {
       if (dx*dx + dz*dz > SPECIAL_WALL_RADIUS * SPECIAL_WALL_RADIUS) continue;
-      const wx = sx + dx;
-      const wz = sz + dz;
+      const wx = sx + dx, wz = sz + dz;
       const px = wx - cx + WALL_TEX_HALF;
       const pz = wz - cz + WALL_TEX_HALF;
       if (px < 0 || px >= WALL_TEX_SIZE || pz < 0 || pz >= WALL_TEX_SIZE) continue;
@@ -1553,15 +1569,12 @@ function paintBiome(sx, sz, cx, cz) {
     }
   }
 }
-
 function updateBiomeTex(ballX, ballZ) {
   const cx = Math.floor(ballX / CELL);
   const cz = Math.floor(ballZ / CELL);
   if (cx === lastBiomeCX && cz === lastBiomeCZ && biomeVersion === lastBiomeVersion) return;
-  lastBiomeCX = cx;
-  lastBiomeCZ = cz;
+  lastBiomeCX = cx; lastBiomeCZ = cz;
   lastBiomeVersion = biomeVersion;
-
   for (let i = 0; i < WALL_TEX_SIZE * WALL_TEX_SIZE; i++) {
     biomeTexData[i * 4]     = 127;
     biomeTexData[i * 4 + 1] = 127;
@@ -1569,24 +1582,20 @@ function updateBiomeTex(ballX, ballZ) {
     biomeTexData[i * 4 + 3] = 255;
     biomeDistBuf[i] = 1e9;
   }
-
   for (let sz = cz - WALL_TEX_HALF - SPECIAL_WALL_RADIUS; sz <= cz + WALL_TEX_HALF + SPECIAL_WALL_RADIUS; sz++) {
     for (let sx = cx - WALL_TEX_HALF - SPECIAL_WALL_RADIUS; sx <= cx + WALL_TEX_HALF + SPECIAL_WALL_RADIUS; sx++) {
       if (!isSpecialWall(sx, sz)) continue;
       paintBiome(sx, sz, cx, cz);
     }
   }
-
   device.queue.writeTexture(
-    { texture: biomeTex },
-    biomeTexData,
-    { bytesPerRow: WALL_TEX_SIZE * 4 },
-    [WALL_TEX_SIZE, WALL_TEX_SIZE]
+    { texture: biomeTex }, biomeTexData,
+    { bytesPerRow: WALL_TEX_SIZE * 4 }, [WALL_TEX_SIZE, WALL_TEX_SIZE]
   );
 }
 
 // ===========================================================================
-//  WGSL
+//  WGSL (shader — unchanged from previous version)
 // ===========================================================================
 const WGSL = `
 struct Globals {
@@ -1733,14 +1742,12 @@ fn vnoise(p: vec3<f32>) -> f32 {
 fn fbm2(p: vec3<f32>) -> f32 {
   return vnoise(p) * 0.65 + vnoise(p * 2.7) * 0.35;
 }
-
 fn mazeSolid(x: i32, z: i32) -> bool {
   let dx = x - G.ballCellX + ${WALL_TEX_HALF};
   let dz = z - G.ballCellZ + ${WALL_TEX_HALF};
   if (dx < 0 || dx >= ${WALL_TEX_SIZE} || dz < 0 || dz >= ${WALL_TEX_SIZE}) { return false; }
   return textureLoad(wallTex, vec2<i32>(dx, dz), 0).r > 0.5;
 }
-
 fn biomeTintAt(cellX: i32, cellZ: i32) -> vec3<f32> {
   let relX = cellX - G.ballCellX + ${WALL_TEX_HALF};
   let relZ = cellZ - G.ballCellZ + ${WALL_TEX_HALF};
@@ -1750,7 +1757,6 @@ fn biomeTintAt(cellX: i32, cellZ: i32) -> vec3<f32> {
   let s = textureLoad(biomeTex, vec2<i32>(relX, relZ), 0).rgb;
   return 0.6 + s * 0.8;
 }
-
 fn floorProximity(p: vec3<f32>) -> f32 {
   let c = floor(p.xz / ${CELL.toFixed(2)});
   var dmin = 1e9;
@@ -1768,7 +1774,6 @@ fn floorProximity(p: vec3<f32>) -> f32 {
   }
   return sqrt(dmin);
 }
-
 fn rayHitsAABB(p: vec3<f32>, dir: vec3<f32>, mn: vec3<f32>, mx: vec3<f32>) -> bool {
   if (all(p >= mn) && all(p <= mx)) { return true; }
   let absDir = abs(dir);
@@ -1785,7 +1790,6 @@ fn rayHitsAABB(p: vec3<f32>, dir: vec3<f32>, mn: vec3<f32>, mx: vec3<f32>) -> bo
   let tFar  = min(min(t1.x, t1.y), t1.z);
   return tFar >= max(tNear, 0.0);
 }
-
 fn wallShadow(p: vec3<f32>, L: vec3<f32>) -> f32 {
   let c = vec2<i32>(floor(p.xz / ${CELL.toFixed(2)}));
   let pSafe = vec3<f32>(p.x, max(p.y, 0.001), p.z);
@@ -1813,7 +1817,6 @@ fn wallShadow(p: vec3<f32>, L: vec3<f32>) -> f32 {
   }
   return lit / 8.0;
 }
-
 fn roundedNormal(i: VOut, radius: f32) -> vec3<f32> {
   let half = i.isz * 0.5;
   let lc = (i.local - 0.5) * i.isz;
@@ -1824,7 +1827,6 @@ fn roundedNormal(i: VOut, radius: f32) -> vec3<f32> {
   if (l < 1e-6) { return normalize(i.nrm); }
   return nr / l;
 }
-
 fn envColor(rd: vec3<f32>, L: vec3<f32>) -> vec3<f32> {
   let up = smoothstep(-0.05, 0.5, rd.y);
   let sky = mix(vec3<f32>(0.045,0.065,0.11), vec3<f32>(0.16,0.24,0.40), up);
@@ -1835,17 +1837,14 @@ fn envColor(rd: vec3<f32>, L: vec3<f32>) -> vec3<f32> {
   c += vec3<f32>(0.05,0.02,0.10) * smoothstep(0.3, 0.9, rd.y);
   return c;
 }
-
 fn tileHash(ti: vec2<i32>) -> f32 {
   return hash31(vec3<f32>(f32(ti.x), 0.0, f32(ti.y)));
 }
-
 fn inBox(p: vec2<f32>, mn: vec2<f32>, mx: vec2<f32>) -> f32 {
   let q = max(mn - p, p - mx);
   let dist = max(max(q.x, q.y), 0.0);
   return 1.0 - smoothstep(0.0, 0.008, dist);
 }
-
 fn sevenSegAt(uv: vec2<f32>, digit: i32) -> f32 {
   let a = inBox(uv, vec2<f32>(0.20, 0.20), vec2<f32>(0.80, 0.30));
   let b = inBox(uv, vec2<f32>(0.70, 0.20), vec2<f32>(0.80, 0.50));
@@ -1854,7 +1853,6 @@ fn sevenSegAt(uv: vec2<f32>, digit: i32) -> f32 {
   let e = inBox(uv, vec2<f32>(0.20, 0.50), vec2<f32>(0.30, 0.80));
   let f = inBox(uv, vec2<f32>(0.20, 0.20), vec2<f32>(0.30, 0.50));
   let g = inBox(uv, vec2<f32>(0.20, 0.45), vec2<f32>(0.80, 0.55));
-
   var m = 0.0;
   switch (digit) {
     case 0: { m = max(max(a, b), max(max(c, d), max(e, f))); }
@@ -1871,20 +1869,13 @@ fn sevenSegAt(uv: vec2<f32>, digit: i32) -> f32 {
   }
   return m;
 }
-
 fn sevenSegCount(uv: vec2<f32>, count: i32) -> f32 {
-  if (count < 10) {
-    return sevenSegAt(uv, count);
-  }
+  if (count < 10) return sevenSegAt(uv, count);
   let tens = (count / 10) % 10;
   let units = count % 10;
-  if (uv.x < 0.5) {
-    return sevenSegAt(vec2<f32>(uv.x * 2.0, uv.y), tens);
-  } else {
-    return sevenSegAt(vec2<f32>((uv.x - 0.5) * 2.0, uv.y), units);
-  }
+  if (uv.x < 0.5) return sevenSegAt(vec2<f32>(uv.x * 2.0, uv.y), tens);
+  else return sevenSegAt(vec2<f32>((uv.x - 0.5) * 2.0, uv.y), units);
 }
-
 fn digitColor(d: i32) -> vec3<f32> {
   switch d {
     case 1: { return vec3<f32>(0.35, 0.75, 1.0); }
@@ -1939,7 +1930,6 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
     let g2 = cos(dot(i.local, b) * 0.7) * (b * 0.7);
     let g2t = g2 - i.local * dot(g2, i.local);
     let n = normalize(Rm * normalize(i.local + (g1t + g2t) * 0.016));
-
     let cosV = clamp(dot(n, Vv), 0.0, 1.0);
     let fresnel = 0.04 + 0.96 * pow(1.0 - cosV, 5.0);
     let R = reflect(-Vv, n);
@@ -1950,7 +1940,6 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
     let studioL = normalize(vec3<f32>(-0.4, 0.5, -0.4));
     refl += vec3<f32>(0.65, 0.55, 0.95) * pow(max(dot(R, studioL), 0.0), 60.0) * 0.55;
     refl += vec3<f32>(0.10, 0.05, 0.22) * max(-n.y, 0.0);
-
     let thick = 2.0 * pow(cosV, 0.8);
     var absorbCol = vec3<f32>(1.6, 3.8, 1.1);
     if (G.invertState > 0.5) { absorbCol = vec3<f32>(4.0, 2.5, 0.6); }
@@ -1959,11 +1948,9 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
     let throughColor = envColor(refrDir * 0.6 + vec3<f32>(0.0, -0.5, 0.0), L);
     var trans = throughColor * absorb * 1.7;
     trans *= mix(1.0, 0.30, smoothstep(0.3, 0.95, cosV));
-
     var innerGlow = vec3<f32>(0.30, 0.09, 0.68);
     if (G.invertState > 0.5) { innerGlow = vec3<f32>(0.1, 0.5, 1.0); }
     trans += innerGlow * (0.15 + 0.55 * (1.0 - cosV));
-
     col = mix(trans, refl, fresnel);
     let rim = pow(1.0 - cosV, 4.0);
     var rimCol = vec3<f32>(0.55, 0.22, 1.00);
@@ -2066,7 +2053,6 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
       col *= ao;
     }
   }
-
   col += glow;
   col = mix(vec3<f32>(0.012, 0.016, 0.035), col, fogF);
   col *= 1.10;
@@ -2156,7 +2142,7 @@ device.queue.writeBuffer(sphereIdxBuf, 0, sphere.i);
 const sphereIdxCount = sphere.i.length;
 
 // ===========================================================================
-//  Instances
+//  Instance buffers
 // ===========================================================================
 const MAX_INSTANCES = 16000;
 const instBuf = device.createBuffer({ size: MAX_INSTANCES*48, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
@@ -2335,21 +2321,17 @@ function buildViewProj(eye, target, aspect){
 }
 
 // ===========================================================================
-//  Minimap
+//  Minimap drawing
 // ===========================================================================
 function drawMapOnCanvas(ctx, width, height, centerCellX, centerCellZ, scale, panX, panY) {
   ctx.fillStyle = "#050b18";
   ctx.fillRect(0, 0, width, height);
-  const halfW = width / 2;
-  const halfH = height / 2;
+  const halfW = width / 2, halfH = height / 2;
   const cx = centerCellX + panX / scale;
   const cz = centerCellZ + panY / scale;
-  const halfCellsW = halfW / scale;
-  const halfCellsH = halfH / scale;
-  const minX = Math.floor(cx - halfCellsW) - 1;
-  const maxX = Math.ceil(cx + halfCellsW) + 1;
-  const minZ = Math.floor(cz - halfCellsH) - 1;
-  const maxZ = Math.ceil(cz + halfCellsH) + 1;
+  const halfCellsW = halfW / scale, halfCellsH = halfH / scale;
+  const minX = Math.floor(cx - halfCellsW) - 1, maxX = Math.ceil(cx + halfCellsW) + 1;
+  const minZ = Math.floor(cz - halfCellsH) - 1, maxZ = Math.ceil(cz + halfCellsH) + 1;
   for (let z = minZ; z <= maxZ; z++) {
     for (let x = minX; x <= maxX; x++) {
       if (!visitedCells.has(`${x},${z}`)) continue;
@@ -2383,8 +2365,7 @@ function drawMapOnCanvas(ctx, width, height, centerCellX, centerCellZ, scale, pa
       }
     }
   }
-  const playerX = ball.x / CELL;
-  const playerZ = ball.z / CELL;
+  const playerX = ball.x / CELL, playerZ = ball.z / CELL;
   const ppx = halfW + (playerX - centerCellX) * scale - panX;
   const ppy = halfH + (playerZ - centerCellZ) * scale - panY;
   ctx.beginPath();
@@ -2485,11 +2466,9 @@ function restart() {
   ball.vx = 0; ball.vz = 0;
   lastTexCellX = null; lastTexCellZ = null; lastTexDestroyedCount = -1;
   lastBiomeCX = null; lastBiomeCZ = null; biomeVersion++;
-
   const el = document.getElementById("score");
   el.textContent = "0";
   el.classList.remove("visible");
-
   updateHp(false);
   gameOverEl.classList.add("hidden");
   requestWakeLock();
@@ -2529,11 +2508,11 @@ async function continueLatest() {
 document.getElementById("btn-continue").addEventListener("click", continueLatest);
 document.getElementById("btn-load-overlay").addEventListener("click", openSavesModal);
 document.getElementById("btn-newgame").addEventListener("click", startNewGame);
-
 gameOverEl.addEventListener("click", () => { openMenu(); });
 
 // ===========================================================================
-//  Tap zones: center → invert, edges → double-tap recalibrate
+//  Tap zones: everything except bottom 15% → invert (if charges), else recalibrate.
+//  Bottom 15% → double-tap recalibrate.
 // ===========================================================================
 let pressTimer = null, pressActive = false, pressFired = false;
 let lastTapTime = 0;
@@ -2562,15 +2541,12 @@ canvas.addEventListener("pointerup", (e) => {
   if (!wasTap) return;
   if (overlayVisible || menuVisible || gameOver || infoModalOpen || savesModalOpen) return;
 
-  // Определяем, в какой зоне тап: центр (инверсия) или край (двойной тап = калибровка).
-  const centerX = window.innerWidth * 0.5;
-  const centerY = window.innerHeight * 0.5;
-  const tapDist = Math.hypot(e.clientX - centerX, e.clientY - centerY);
-  const centerThreshold = Math.min(window.innerWidth, window.innerHeight) * CENTER_ZONE_FRAC;
-  const isCenterTap = tapDist < centerThreshold;
+  // Нижние BOTTOM_ZONE_FRAC экрана — зона двойного тапа (обнуление наклона).
+  const bottomZoneTop = window.innerHeight * (1 - BOTTOM_ZONE_FRAC);
+  const isBottomZone = e.clientY > bottomZoneTop;
 
-  if (isCenterTap && inversionCharges > 0) {
-    // Центр + есть заряды → переключаем инверсию
+  if (!isBottomZone && inversionCharges > 0) {
+    // Инверсия (только если есть заряды и тап не в нижней зоне)
     isInverted = !isInverted;
     invertFlash = 1.0;
     playToggleSound();
@@ -2583,7 +2559,7 @@ canvas.addEventListener("pointerup", (e) => {
     return;
   }
 
-  // Край экрана (или центр без зарядов) → двойной тап для калибровки
+  // Двойной тап — калибровка (в нижней зоне, либо везде если зарядов нет)
   const now = performance.now();
   if (now - lastTapTime < DOUBLE_TAP_MS) {
     recalibrateTilt();
@@ -2595,6 +2571,9 @@ canvas.addEventListener("pointerup", (e) => {
 canvas.addEventListener("pointercancel", cancelPress);
 canvas.addEventListener("pointerleave", cancelPress);
 
+// ===========================================================================
+//  Menu button handlers
+// ===========================================================================
 document.getElementById("btn-restart").addEventListener("click", () => { restart(); closeMenu(); });
 document.getElementById("btn-close").addEventListener("click", closeMenu);
 document.getElementById("btn-load-menu").addEventListener("click", openSavesModal);
@@ -2608,26 +2587,59 @@ document.getElementById("btn-info-ok").addEventListener("click", () => {
   requestWakeLock();
 });
 
+// Language cycle
+document.getElementById("btn-lang").addEventListener("click", () => {
+  const cycle = ['auto', 'en', 'ru'];
+  const idx = cycle.indexOf(settingsLanguage);
+  settingsLanguage = cycle[(idx + 1) % cycle.length];
+  try { localStorage.setItem(MS_LANG_KEY, settingsLanguage); } catch(e) {}
+  LANG = settingsLanguage === 'auto' ? BROWSER_LANG : settingsLanguage;
+  L = T[LANG];
+  applyLanguage();
+  if (savesModalOpen) refreshSavesList();
+});
+
+// Sliders
 document.getElementById("sens-x").addEventListener("input", (e) => {
   sensX = parseFloat(e.target.value);
   document.getElementById("sens-x-val").textContent = sensX.toFixed(1) + "°";
+  saveSettingsToStorage();
 });
 document.getElementById("sens-y").addEventListener("input", (e) => {
   sensY = parseFloat(e.target.value);
   document.getElementById("sens-y-val").textContent = sensY.toFixed(1) + "°";
+  saveSettingsToStorage();
 });
-document.getElementById("invert-x").addEventListener("change", (e) => { invertX = e.target.checked; });
-document.getElementById("invert-y").addEventListener("change", (e) => { invertY = e.target.checked; });
+
+// Checkboxes
+document.getElementById("invert-x").addEventListener("change", (e) => {
+  invertX = e.target.checked;
+  saveSettingsToStorage();
+});
+document.getElementById("invert-y").addEventListener("change", (e) => {
+  invertY = e.target.checked;
+  saveSettingsToStorage();
+});
 document.getElementById("minimap-chk").addEventListener("change", (e) => {
   minimapVisible = e.target.checked;
   minimapWrap.style.display = minimapVisible ? "block" : "none";
+  saveSettingsToStorage();
 });
+
+// Sync UI elements with loaded settings
+document.getElementById("sens-x").value = sensX;
+document.getElementById("sens-y").value = sensY;
+document.getElementById("sens-x-val").textContent = sensX.toFixed(1) + "°";
+document.getElementById("sens-y-val").textContent = sensY.toFixed(1) + "°";
+document.getElementById("invert-x").checked = invertX;
+document.getElementById("invert-y").checked = invertY;
+document.getElementById("minimap-chk").checked = minimapVisible;
 
 updateHp(false);
 updateChargeUI();
 
 // ===========================================================================
-//  Minimap Interaction
+//  Minimap interaction
 // ===========================================================================
 minimapWrap.addEventListener("pointerdown", e => {
   e.stopPropagation();
@@ -2660,11 +2672,16 @@ minimapWrap.addEventListener("pointermove", e => {
 minimapWrap.addEventListener("pointerup", e => {
   isDraggingMinimap = false;
   try { minimapWrap.releasePointerCapture(e.pointerId); } catch(_) {}
-  if (!dragMoved) openFullscreenMap();
+  if (!dragMoved) {
+    openFullscreenMap();
+  } else {
+    saveSettingsToStorage();
+  }
 });
 minimapWrap.addEventListener("pointercancel", e => {
   isDraggingMinimap = false;
   try { minimapWrap.releasePointerCapture(e.pointerId); } catch(_) {}
+  saveSettingsToStorage();
 });
 minimapGrip.addEventListener("pointerdown", e => {
   e.stopPropagation();
@@ -2689,10 +2706,11 @@ minimapGrip.addEventListener("pointermove", e => {
 minimapGrip.addEventListener("pointerup", e => {
   isResizingMinimap = false;
   try { minimapGrip.releasePointerCapture(e.pointerId); } catch(_) {}
+  saveSettingsToStorage();
 });
 
 // ===========================================================================
-//  Fullscreen map
+//  Fullscreen map interaction
 // ===========================================================================
 let isPanning = false;
 let lastPanX = 0, lastPanY = 0;
@@ -2832,10 +2850,8 @@ function frame(now){
 
   buildInstances(ball.x, ball.z);
   device.queue.writeBuffer(instBuf,0,instData.subarray(0,instCount*12));
-
   buildParticleInstances();
   if (particleCount > 0) device.queue.writeBuffer(particleBuf,0,particleData.subarray(0,particleCount*12));
-
   buildCrystalInstances();
   if (crystalCount > 0) device.queue.writeBuffer(crystalInstBuf, 0, crystalInstData.subarray(0, crystalCount*12));
 
@@ -2891,7 +2907,7 @@ function frame(now){
 requestAnimationFrame(frame);
 
 // ===========================================================================
-//  Init DB
+//  Init
 // ===========================================================================
 (async () => {
   await initDB();
