@@ -215,8 +215,8 @@ const LANG = (navigator.language || navigator.userLanguage || 'en').toLowerCase(
 
 const T = {
   en: {
-    overlayIntro: "Tilt phone / mouse to move\nLong press — Menu\nDouble tap — reset tilt",
-    overlayRules: "Find inversion charges to invert your ball with a tap anywhere\nBlue ball destroys mines but takes damage from empty cells\nSpecial glowing cells can only be destroyed after clearing all mines around them, their destruction saves the progress",
+    overlayIntro: "Tilt phone / mouse to move\nLong press — Menu\nDouble tap near edges — reset tilt",
+    overlayRules: "Find inversion charges to invert your ball — tap near the center of the screen\nBlue ball destroys mines but takes damage from empty cells\nSpecial glowing cells can only be destroyed after clearing all mines around them, their destruction saves the progress",
     menu: "Menu",
     restart: "Restart (New Seed)",
     sensX: "X Sensitivity",
@@ -242,8 +242,8 @@ const T = {
     loadFailed: "Failed to load save",
   },
   ru: {
-    overlayIntro: "Управление наклоном телефона/мышкой\nЗажатие — Меню\nДва тапа — обнулить наклон",
-    overlayRules: "Найдя инверсионные заряды можно инвертировать шар тапнув в любом месте\nГолубой шар уничтожает мины но получает урон от клеток без мин\nОсобые сияющие клетки можно разрушить лишь уничтожив все мины вокруг них, их уничтожение сохраняет прогресс",
+    overlayIntro: "Управление наклоном телефона/мышкой\nЗажатие — Меню\nДвойной тап у краёв — обнулить наклон",
+    overlayRules: "Найдя инверсионные заряды можно инвертировать шар — тапни ближе к центру экрана\nГолубой шар уничтожает мины но получает урон от клеток без мин\nОсобые сияющие клетки можно разрушить лишь уничтожив все мины вокруг них, их уничтожение сохраняет прогресс",
     menu: "Меню",
     restart: "Заново (новый сид)",
     sensX: "X Чувствительность",
@@ -317,6 +317,10 @@ const SPECIAL_WALL_CHANCE = 0.005;
 const SPECIAL_WALL_RADIUS = 10;
 const SPECIAL_WALL_MIN_DIST = 3;
 
+// Зона "центра" — круг радиуса CENTER_ZONE_FRAC * min(W,H) от центра экрана.
+// Тап внутри — инверсия (если есть заряды). Снаружи — двойной тап для калибровки.
+const CENTER_ZONE_FRAC = 0.35;
+
 const BIOME_PALETTE = [
   [239,  80,  32],
   [ 48, 223, 159],
@@ -328,7 +332,7 @@ const BIOME_PALETTE = [
   [143,  32, 207],
 ];
 
-const SAVE_MAGIC = 0x4D534144; // "MSAD"
+const SAVE_MAGIC = 0x4D534144;
 const SAVE_VERSION = 1;
 
 let camHeight = CAM_HEIGHT_BASE;
@@ -389,12 +393,9 @@ function openDB() {
     req.onerror = () => reject(req.error);
   });
 }
-
 async function initDB() {
-  try { db = await openDB(); }
-  catch(e) { console.error('IndexedDB init failed:', e); db = null; }
+  try { db = await openDB(); } catch(e) { console.error('IndexedDB init failed:', e); db = null; }
 }
-
 function dbPut(record) {
   if (!db) return Promise.resolve(null);
   return new Promise((resolve, reject) => {
@@ -404,7 +405,6 @@ function dbPut(record) {
     req.onerror = () => reject(req.error);
   });
 }
-
 function dbAll() {
   if (!db) return Promise.resolve([]);
   return new Promise((resolve, reject) => {
@@ -414,7 +414,6 @@ function dbAll() {
     req.onerror = () => reject(req.error);
   });
 }
-
 function dbGet(id) {
   if (!db) return Promise.resolve(null);
   return new Promise((resolve, reject) => {
@@ -424,7 +423,6 @@ function dbGet(id) {
     req.onerror = () => reject(req.error);
   });
 }
-
 function dbDelete(id) {
   if (!db) return Promise.resolve();
   return new Promise((resolve, reject) => {
@@ -476,7 +474,6 @@ function serializeState() {
     dv.setInt32(o, x, true); o += 4;
     dv.setInt32(o, z, true); o += 4;
   }
-
   return buf;
 }
 
@@ -553,9 +550,7 @@ async function saveGame() {
     const ts = Date.now();
     await dbPut({ score, timestamp: ts, data });
     await updateSaveButtonsAvailability();
-  } catch(e) {
-    console.error('Save failed:', e);
-  }
+  } catch(e) { console.error('Save failed:', e); }
 }
 
 async function loadSaveById(id) {
@@ -564,10 +559,7 @@ async function loadSaveById(id) {
     if (!rec) return false;
     deserializeState(rec.data);
     return true;
-  } catch(e) {
-    console.error('Load failed:', e);
-    return false;
-  }
+  } catch(e) { console.error('Load failed:', e); return false; }
 }
 
 // ===========================================================================
@@ -598,7 +590,6 @@ async function openSavesModal() {
   savesModalEl.classList.remove("hidden");
   await refreshSavesList();
 }
-
 function closeSavesModal() {
   savesModalOpen = false;
   savesModalEl.classList.add("hidden");
@@ -1042,7 +1033,7 @@ function showFloatingText(wx, wy, wz, text, color, sx = 0, sy = 0) {
 }
 
 // ===========================================================================
-//  Particle system
+//  Particles
 // ===========================================================================
 const particles = [];
 
@@ -1312,7 +1303,7 @@ function stepBall(dt) {
 }
 
 // ===========================================================================
-//  3x3 matrix helpers
+//  Math helpers
 // ===========================================================================
 function norm3(v){ const l=Math.hypot(v.x,v.y,v.z); return l<1e-9?null:{x:v.x/l,y:v.y/l,z:v.z/l}; }
 const dot3=(a,b)=>a.x*b.x+a.y*b.y+a.z*b.z;
@@ -1951,7 +1942,6 @@ fn fs_main(i : VOut) -> @location(0) vec4<f32> {
 
     let cosV = clamp(dot(n, Vv), 0.0, 1.0);
     let fresnel = 0.04 + 0.96 * pow(1.0 - cosV, 5.0);
-
     let R = reflect(-Vv, n);
     var refl = envColor(R, L);
     refl += vec3<f32>(1.0, 0.94, 0.84) * pow(max(dot(R, L), 0.0), 500.0) * 5.5;
@@ -2100,8 +2090,7 @@ function buildCube() {
     { n:[ 0, 0, 1], v:[[1,0,1],[0,0,1],[0,1,1],[1,1,1]] },
     { n:[ 0, 0,-1], v:[[0,0,0],[1,0,0],[1,1,0],[0,1,0]] },
   ];
-  const verts = [];
-  const idx = [];
+  const verts = [], idx = [];
   for (const f of faces) {
     const base = verts.length / 6;
     for (const p of f.v) verts.push(p[0],p[1],p[2], f.n[0],f.n[1],f.n[2]);
@@ -2118,23 +2107,14 @@ const cubeIdxCount = cube.i.length;
 
 function buildCrystal() {
   const H = 0.7, W = 0.35;
-  const V = [
-    [0, H, 0], [0, -H, 0],
-    [W, 0, 0], [-W, 0, 0], [0, 0, W], [0, 0, -W],
-  ];
-  const faces = [
-    [0, 4, 2], [0, 3, 4], [0, 5, 3], [0, 2, 5],
-    [1, 2, 4], [1, 4, 3], [1, 3, 5], [1, 5, 2],
-  ];
-  const verts = [];
-  const idx = [];
+  const V = [[0,H,0],[0,-H,0],[W,0,0],[-W,0,0],[0,0,W],[0,0,-W]];
+  const faces = [[0,4,2],[0,3,4],[0,5,3],[0,2,5],[1,2,4],[1,4,3],[1,3,5],[1,5,2]];
+  const verts = [], idx = [];
   for (const f of faces) {
     const va = V[f[0]], vb = V[f[1]], vc = V[f[2]];
     const ax = vb[0]-va[0], ay = vb[1]-va[1], az = vb[2]-va[2];
     const bx = vc[0]-va[0], by = vc[1]-va[1], bz = vc[2]-va[2];
-    let nx = ay*bz - az*by;
-    let ny = az*bx - ax*bz;
-    let nz = ax*by - ay*bx;
+    let nx = ay*bz - az*by, ny = az*bx - ax*bz, nz = ax*by - ay*bx;
     const nl = Math.hypot(nx, ny, nz) || 1;
     nx /= nl; ny /= nl; nz /= nl;
     const base = verts.length / 6;
@@ -2153,8 +2133,7 @@ device.queue.writeBuffer(crystalIdxBuf, 0, crystal.i);
 const crystalIdxCount = crystal.i.length;
 
 function makeSphere(slats, slons) {
-  const verts = [];
-  const idx = [];
+  const verts = [], idx = [];
   for (let i = 0; i <= slats; i++) {
     const th = i / slats * Math.PI, y = Math.cos(th), r = Math.sin(th);
     for (let j = 0; j <= slons; j++) {
@@ -2436,7 +2415,7 @@ function updateMinimap() {
 }
 
 // ===========================================================================
-//  UI
+//  UI helpers
 // ===========================================================================
 const overlay = document.getElementById("overlay");
 const menuEl  = document.getElementById("menu");
@@ -2547,15 +2526,15 @@ async function continueLatest() {
   closeMenu();
 }
 
-// Overlay buttons
 document.getElementById("btn-continue").addEventListener("click", continueLatest);
 document.getElementById("btn-load-overlay").addEventListener("click", openSavesModal);
 document.getElementById("btn-newgame").addEventListener("click", startNewGame);
 
-// Game over → menu
 gameOverEl.addEventListener("click", () => { openMenu(); });
 
-// Long-press → menu, tap logic
+// ===========================================================================
+//  Tap zones: center → invert, edges → double-tap recalibrate
+// ===========================================================================
 let pressTimer = null, pressActive = false, pressFired = false;
 let lastTapTime = 0;
 
@@ -2577,13 +2556,21 @@ function cancelPress(){
   pressActive = false;
 }
 
-canvas.addEventListener("pointerup", () => {
+canvas.addEventListener("pointerup", (e) => {
   const wasTap = pressActive && !pressFired;
   cancelPress();
   if (!wasTap) return;
   if (overlayVisible || menuVisible || gameOver || infoModalOpen || savesModalOpen) return;
 
-  if (inversionCharges > 0) {
+  // Определяем, в какой зоне тап: центр (инверсия) или край (двойной тап = калибровка).
+  const centerX = window.innerWidth * 0.5;
+  const centerY = window.innerHeight * 0.5;
+  const tapDist = Math.hypot(e.clientX - centerX, e.clientY - centerY);
+  const centerThreshold = Math.min(window.innerWidth, window.innerHeight) * CENTER_ZONE_FRAC;
+  const isCenterTap = tapDist < centerThreshold;
+
+  if (isCenterTap && inversionCharges > 0) {
+    // Центр + есть заряды → переключаем инверсию
     isInverted = !isInverted;
     invertFlash = 1.0;
     playToggleSound();
@@ -2592,20 +2579,22 @@ canvas.addEventListener("pointerup", () => {
       const spd = 2 + Math.random() * 5;
       spawnParticle(ball.x, BALL_R, ball.z, Math.cos(ang) * spd, Math.random() * 5, Math.sin(ang) * spd, 0.1, 0.0, 0.8, 1.0, 0.6);
     }
+    lastTapTime = 0;
+    return;
+  }
+
+  // Край экрана (или центр без зарядов) → двойной тап для калибровки
+  const now = performance.now();
+  if (now - lastTapTime < DOUBLE_TAP_MS) {
+    recalibrateTilt();
+    lastTapTime = 0;
   } else {
-    const now = performance.now();
-    if (now - lastTapTime < DOUBLE_TAP_MS) {
-      recalibrateTilt();
-      lastTapTime = 0;
-    } else {
-      lastTapTime = now;
-    }
+    lastTapTime = now;
   }
 });
 canvas.addEventListener("pointercancel", cancelPress);
 canvas.addEventListener("pointerleave", cancelPress);
 
-// Menu buttons
 document.getElementById("btn-restart").addEventListener("click", () => { restart(); closeMenu(); });
 document.getElementById("btn-close").addEventListener("click", closeMenu);
 document.getElementById("btn-load-menu").addEventListener("click", openSavesModal);
@@ -2902,7 +2891,7 @@ function frame(now){
 requestAnimationFrame(frame);
 
 // ===========================================================================
-//  Init DB and buttons
+//  Init DB
 // ===========================================================================
 (async () => {
   await initDB();
