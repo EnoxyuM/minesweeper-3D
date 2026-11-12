@@ -270,16 +270,14 @@ const T = {
 };
 
 // ===========================================================================
-//  Language init (from storage or browser)
+//  Language init
 // ===========================================================================
 const MS_SETTINGS_KEY = 'msSettings';
 const MS_LANG_KEY = 'msLang';
-
 const BROWSER_LANG = (navigator.language || navigator.userLanguage || 'en').toLowerCase().startsWith('ru') ? 'ru' : 'en';
 let settingsLanguage = 'auto';
 try { settingsLanguage = localStorage.getItem(MS_LANG_KEY) || 'auto'; } catch(e) {}
 if (settingsLanguage !== 'auto' && settingsLanguage !== 'en' && settingsLanguage !== 'ru') settingsLanguage = 'auto';
-
 let LANG = settingsLanguage === 'auto' ? BROWSER_LANG : settingsLanguage;
 let L = T[LANG];
 
@@ -329,8 +327,6 @@ const SPECIAL_WALL_CHANCE = 0.005;
 const SPECIAL_WALL_RADIUS = 10;
 const SPECIAL_WALL_MIN_DIST = 3;
 
-// Нижние 15% экрана — зона для двойного тапа (обнуление наклона).
-// Всё остальное (включая центр) — зона для инверсии.
 const BOTTOM_ZONE_FRAC = 0.15;
 
 const BIOME_PALETTE = [
@@ -385,7 +381,7 @@ let savesModalOpen = false;
 let bonusOrbs = [];
 
 // ===========================================================================
-//  Load settings from localStorage
+//  Settings storage
 // ===========================================================================
 function loadSettingsFromStorage() {
   try {
@@ -400,7 +396,6 @@ function loadSettingsFromStorage() {
     if (typeof s.minimapY === 'number' && isFinite(s.minimapY)) minimapY = s.minimapY;
   } catch(e) { console.warn('Settings load failed', e); }
 }
-
 function saveSettingsToStorage() {
   try {
     localStorage.setItem(MS_SETTINGS_KEY, JSON.stringify({
@@ -410,11 +405,9 @@ function saveSettingsToStorage() {
   } catch(e) { console.warn('Settings save failed', e); }
 }
 
-// Declare minimap state (early — loadSettingsFromStorage uses these variables)
 let minimapVisible = true;
 let minimapSize = 140;
 let minimapX = -1, minimapY = -1;
-
 loadSettingsFromStorage();
 
 // ===========================================================================
@@ -479,7 +472,7 @@ function dbDelete(id) {
 }
 
 // ===========================================================================
-//  Serialize / deserialize game state
+//  Serialize / deserialize
 // ===========================================================================
 function serializeState() {
   const dArr = [];
@@ -631,7 +624,6 @@ function closeSavesModal() {
   savesModalEl.classList.add("hidden");
   requestWakeLock();
 }
-
 async function refreshSavesList() {
   const records = await dbAll();
   records.sort((a, b) => b.timestamp - a.timestamp);
@@ -646,7 +638,6 @@ async function refreshSavesList() {
     </div>
   `).join("");
 }
-
 savesListEl.addEventListener("click", async e => {
   const row = e.target.closest(".save-row");
   if (!row) return;
@@ -666,7 +657,6 @@ savesListEl.addEventListener("click", async e => {
     closeMenu();
   }
 });
-
 document.getElementById("btn-saves-close").addEventListener("click", closeSavesModal);
 
 async function updateSaveButtonsAvailability() {
@@ -702,7 +692,6 @@ if (minimapX >= 0 && minimapY >= 0) {
   minimapWrap.style.left = minimapX + "px";
   minimapWrap.style.top = minimapY + "px";
 }
-
 minimapWrap.style.display = minimapVisible ? "block" : "none";
 
 let mapOpen = false;
@@ -784,7 +773,6 @@ function initAudio() {
   rollSource.connect(rollFilter).connect(rollGain).connect(audioCtx.destination);
   rollSource.start();
 }
-
 function updateRollSound(speed, dt, active) {
   if (!audioCtx) return;
   smoothSpeed += (speed - smoothSpeed) * Math.min(1, dt * 12);
@@ -794,7 +782,6 @@ function updateRollSound(speed, dt, active) {
   rollGain.gain.setTargetAtTime(targetGain, audioCtx.currentTime, 0.06);
   rollFilter.frequency.setTargetAtTime(targetFreq, audioCtx.currentTime, 0.06);
 }
-
 function playBreakSound() {
   if (!audioCtx) return;
   const t = audioCtx.currentTime;
@@ -818,7 +805,6 @@ function playBreakSound() {
   noise.connect(nf).connect(ng).connect(audioCtx.destination);
   noise.start(t); noise.stop(t + 0.28);
 }
-
 function playExplosionSound() {
   if (!audioCtx) return;
   const t = audioCtx.currentTime;
@@ -855,7 +841,6 @@ function playExplosionSound() {
   crack.connect(cf).connect(cg).connect(audioCtx.destination);
   crack.start(t); crack.stop(t + 0.18);
 }
-
 function playPickupSound() {
   if (!audioCtx) return;
   const t = audioCtx.currentTime;
@@ -869,7 +854,6 @@ function playPickupSound() {
   osc.connect(og).connect(audioCtx.destination);
   osc.start(t); osc.stop(t + 0.35);
 }
-
 function playToggleSound() {
   if (!audioCtx) return;
   const t = audioCtx.currentTime;
@@ -1016,7 +1000,7 @@ function tileNumberCached(x, z) {
 }
 
 // ===========================================================================
-//  Floating text (with viewport clamping)
+//  Floating text
 // ===========================================================================
 function showFloatingText(wx, wy, wz, text, color, sx = 0, sy = 0) {
   const aspect = canvas.width / canvas.height;
@@ -1041,8 +1025,6 @@ function showFloatingText(wx, wy, wz, text, color, sx = 0, sy = 0) {
   const rawX = (pv[0] / pv[3] * 0.5 + 0.5) * window.innerWidth + sx;
   const rawY = (-pv[1] / pv[3] * 0.5 + 0.5) * window.innerHeight + sy;
 
-  // Clamp to viewport so text never gets cut off. Pad is based on the shorter
-  // screen dimension to keep long labels visible.
   const padX = Math.max(110, Math.min(window.innerWidth, window.innerHeight) * 0.2);
   const padY = 70;
   const screenX = Math.max(padX, Math.min(window.innerWidth - padX, rawX));
@@ -1174,7 +1156,6 @@ function addScore(amount) {
   document.getElementById("score").textContent = score;
   scoreVisibleUntil = performance.now() + 2000;
 }
-
 function updateChargeUI() {
   const el = document.getElementById("charge-counter");
   if (inversionCharges > 0) {
@@ -1201,16 +1182,12 @@ function breakWall(x, z) {
     updateHp();
     playExplosionSound();
     spawnBreakParticles(x, z, false, true);
-
     const wx = (x + 0.5) * CELL;
     const wy = WALL_H + 0.5;
     const wz = (z + 0.5) * CELL;
-
-    // Stack vertically so they don't get clamped to the same x position
     showFloatingText(wx, wy, wz, "+1 HP", "#30ff70", 0, -55);
     showFloatingText(wx, wy, wz, "+" + scoreGain + " Score", "#ffd700", 0, 0);
     showFloatingText(wx, wy, wz, L.progressSaved, "#00d4ff", 0, 55);
-
     saveGame();
     specialWallCache.clear();
     return;
@@ -1595,7 +1572,7 @@ function updateBiomeTex(ballX, ballZ) {
 }
 
 // ===========================================================================
-//  WGSL (shader — unchanged from previous version)
+//  WGSL — с исправленными фигурными скобками в sevenSegCount
 // ===========================================================================
 const WGSL = `
 struct Globals {
@@ -1870,11 +1847,11 @@ fn sevenSegAt(uv: vec2<f32>, digit: i32) -> f32 {
   return m;
 }
 fn sevenSegCount(uv: vec2<f32>, count: i32) -> f32 {
-  if (count < 10) return sevenSegAt(uv, count);
+  if (count < 10) { return sevenSegAt(uv, count); }
   let tens = (count / 10) % 10;
   let units = count % 10;
-  if (uv.x < 0.5) return sevenSegAt(vec2<f32>(uv.x * 2.0, uv.y), tens);
-  else return sevenSegAt(vec2<f32>((uv.x - 0.5) * 2.0, uv.y), units);
+  if (uv.x < 0.5) { return sevenSegAt(vec2<f32>(uv.x * 2.0, uv.y), tens); }
+  else { return sevenSegAt(vec2<f32>((uv.x - 0.5) * 2.0, uv.y), units); }
 }
 fn digitColor(d: i32) -> vec3<f32> {
   switch d {
@@ -2321,7 +2298,7 @@ function buildViewProj(eye, target, aspect){
 }
 
 // ===========================================================================
-//  Minimap drawing
+//  Minimap
 // ===========================================================================
 function drawMapOnCanvas(ctx, width, height, centerCellX, centerCellZ, scale, panX, panY) {
   ctx.fillStyle = "#050b18";
@@ -2511,8 +2488,7 @@ document.getElementById("btn-newgame").addEventListener("click", startNewGame);
 gameOverEl.addEventListener("click", () => { openMenu(); });
 
 // ===========================================================================
-//  Tap zones: everything except bottom 15% → invert (if charges), else recalibrate.
-//  Bottom 15% → double-tap recalibrate.
+//  Tap zones
 // ===========================================================================
 let pressTimer = null, pressActive = false, pressFired = false;
 let lastTapTime = 0;
@@ -2541,12 +2517,10 @@ canvas.addEventListener("pointerup", (e) => {
   if (!wasTap) return;
   if (overlayVisible || menuVisible || gameOver || infoModalOpen || savesModalOpen) return;
 
-  // Нижние BOTTOM_ZONE_FRAC экрана — зона двойного тапа (обнуление наклона).
   const bottomZoneTop = window.innerHeight * (1 - BOTTOM_ZONE_FRAC);
   const isBottomZone = e.clientY > bottomZoneTop;
 
   if (!isBottomZone && inversionCharges > 0) {
-    // Инверсия (только если есть заряды и тап не в нижней зоне)
     isInverted = !isInverted;
     invertFlash = 1.0;
     playToggleSound();
@@ -2559,7 +2533,6 @@ canvas.addEventListener("pointerup", (e) => {
     return;
   }
 
-  // Двойной тап — калибровка (в нижней зоне, либо везде если зарядов нет)
   const now = performance.now();
   if (now - lastTapTime < DOUBLE_TAP_MS) {
     recalibrateTilt();
@@ -2572,7 +2545,7 @@ canvas.addEventListener("pointercancel", cancelPress);
 canvas.addEventListener("pointerleave", cancelPress);
 
 // ===========================================================================
-//  Menu button handlers
+//  Menu handlers
 // ===========================================================================
 document.getElementById("btn-restart").addEventListener("click", () => { restart(); closeMenu(); });
 document.getElementById("btn-close").addEventListener("click", closeMenu);
@@ -2587,7 +2560,6 @@ document.getElementById("btn-info-ok").addEventListener("click", () => {
   requestWakeLock();
 });
 
-// Language cycle
 document.getElementById("btn-lang").addEventListener("click", () => {
   const cycle = ['auto', 'en', 'ru'];
   const idx = cycle.indexOf(settingsLanguage);
@@ -2599,7 +2571,6 @@ document.getElementById("btn-lang").addEventListener("click", () => {
   if (savesModalOpen) refreshSavesList();
 });
 
-// Sliders
 document.getElementById("sens-x").addEventListener("input", (e) => {
   sensX = parseFloat(e.target.value);
   document.getElementById("sens-x-val").textContent = sensX.toFixed(1) + "°";
@@ -2610,8 +2581,6 @@ document.getElementById("sens-y").addEventListener("input", (e) => {
   document.getElementById("sens-y-val").textContent = sensY.toFixed(1) + "°";
   saveSettingsToStorage();
 });
-
-// Checkboxes
 document.getElementById("invert-x").addEventListener("change", (e) => {
   invertX = e.target.checked;
   saveSettingsToStorage();
@@ -2626,7 +2595,6 @@ document.getElementById("minimap-chk").addEventListener("change", (e) => {
   saveSettingsToStorage();
 });
 
-// Sync UI elements with loaded settings
 document.getElementById("sens-x").value = sensX;
 document.getElementById("sens-y").value = sensY;
 document.getElementById("sens-x-val").textContent = sensX.toFixed(1) + "°";
@@ -2672,11 +2640,8 @@ minimapWrap.addEventListener("pointermove", e => {
 minimapWrap.addEventListener("pointerup", e => {
   isDraggingMinimap = false;
   try { minimapWrap.releasePointerCapture(e.pointerId); } catch(_) {}
-  if (!dragMoved) {
-    openFullscreenMap();
-  } else {
-    saveSettingsToStorage();
-  }
+  if (!dragMoved) openFullscreenMap();
+  else saveSettingsToStorage();
 });
 minimapWrap.addEventListener("pointercancel", e => {
   isDraggingMinimap = false;
@@ -2710,7 +2675,7 @@ minimapGrip.addEventListener("pointerup", e => {
 });
 
 // ===========================================================================
-//  Fullscreen map interaction
+//  Fullscreen map
 // ===========================================================================
 let isPanning = false;
 let lastPanX = 0, lastPanY = 0;
