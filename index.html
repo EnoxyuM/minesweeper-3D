@@ -7,7 +7,8 @@
 <style>
   html, body { margin:0; width:100vw; height:100vh; overflow:hidden;
     background:#050b18; font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-    touch-action:manipulation; user-select:none; -webkit-user-select:none; }
+    touch-action:manipulation; user-select:none; -webkit-user-select:none;
+    -webkit-tap-highlight-color:transparent; }
   canvas { display:block; width:100vw; height:100vh; }
   #overlay { position:fixed; inset:0; z-index:30; display:grid; place-items:center;
     padding:20px; text-align:center; color:#e2e8f0; background:rgba(2,6,23,.82);
@@ -54,14 +55,16 @@
     font-variant-numeric: tabular-nums; opacity:.8; }
 
   #minimap-wrap { position:fixed; right:18px; top:45px; z-index:60;
-    width:140px; height:140px; border-radius:8px; border:1px solid rgba(140,90,255,.4);
+    width:140px; height:140px; box-sizing:border-box;
+    border-radius:8px; border:1px solid rgba(140,90,255,.4);
     overflow:hidden; background:rgba(10,15,30,0.8); backdrop-filter:blur(4px);
     touch-action:none; cursor:grab; }
   #minimap-wrap:active { cursor:grabbing; }
-  #minimap-canvas { width:100%; height:100%; display:block; touch-action:none; }
-  #minimap-grip { position:absolute; bottom:2px; right:2px; width:16px; height:16px;
-    cursor:nwse-resize; background:linear-gradient(135deg, transparent 50%, rgba(140,90,255,0.8) 50%);
-    border-bottom-right-radius:6px; touch-action:none; }
+  #minimap-canvas { width:100%; height:100%; display:block; }
+  #minimap-grip { position:absolute; bottom:0; right:0; width:28px; height:28px;
+    cursor:nwse-resize; touch-action:none;
+    background:linear-gradient(135deg, transparent 50%, rgba(140,90,255,0.85) 50%);
+    border-bottom-right-radius:7px; }
 
   #fullscreen-map { position:fixed; inset:0; z-index:80;
     background:rgba(2,6,23,0.95); backdrop-filter:blur(6px);
@@ -269,6 +272,9 @@ const T = {
   }
 };
 
+// ===========================================================================
+//  Language init
+// ===========================================================================
 const MS_SETTINGS_KEY = 'msSettings';
 const MS_LANG_KEY = 'msLang';
 const BROWSER_LANG = (navigator.language || navigator.userLanguage || 'en').toLowerCase().startsWith('ru') ? 'ru' : 'en';
@@ -380,12 +386,6 @@ let bonusOrbs = [];
 // ===========================================================================
 //  Settings storage
 // ===========================================================================
-let minimapVisible = true;
-let minimapSize = 140;
-let minimapX = -1, minimapY = -1;
-let minimapPosValid = false;
-let lastSaveTime = 0;
-
 function loadSettingsFromStorage() {
   try {
     const s = JSON.parse(localStorage.getItem(MS_SETTINGS_KEY) || '{}');
@@ -394,23 +394,28 @@ function loadSettingsFromStorage() {
     if (typeof s.invertX === 'boolean') invertX = s.invertX;
     if (typeof s.invertY === 'boolean') invertY = s.invertY;
     if (typeof s.minimapVisible === 'boolean') minimapVisible = s.minimapVisible;
-    if (typeof s.minimapSize === 'number' && isFinite(s.minimapSize)) minimapSize = Math.max(80, Math.min(300, s.minimapSize));
-    if (typeof s.minimapX === 'number' && isFinite(s.minimapX) && typeof s.minimapY === 'number' && isFinite(s.minimapY)) {
-      minimapX = s.minimapX;
-      minimapY = s.minimapY;
-      minimapPosValid = true;
-    }
+    if (typeof s.minimapSize === 'number' && isFinite(s.minimapSize)) minimapSize = Math.max(60, Math.min(300, s.minimapSize));
+    if (typeof s.minimapFx === 'number' && isFinite(s.minimapFx)) minimapFx = Math.max(0, Math.min(1, s.minimapFx));
+    if (typeof s.minimapFy === 'number' && isFinite(s.minimapFy)) minimapFy = Math.max(0, Math.min(1, s.minimapFy));
+    if (typeof s.minimapX === 'number' && isFinite(s.minimapX)) legacyMinimapX = s.minimapX;
+    if (typeof s.minimapY === 'number' && isFinite(s.minimapY)) legacyMinimapY = s.minimapY;
   } catch(e) { console.warn('Settings load failed', e); }
 }
 function saveSettingsToStorage() {
   try {
     localStorage.setItem(MS_SETTINGS_KEY, JSON.stringify({
       sensX, sensY, invertX, invertY,
-      minimapVisible, minimapSize, minimapX, minimapY
+      minimapVisible, minimapSize, minimapFx, minimapFy
     }));
   } catch(e) { console.warn('Settings save failed', e); }
 }
 
+let minimapVisible = true;
+let minimapSize = 140;
+// Позиция хранится в долях доступной области (0..1) — переживает поворот экрана.
+// null = ещё не задана (дефолт: правый верхний угол).
+let minimapFx = null, minimapFy = null;
+let legacyMinimapX = null, legacyMinimapY = null;
 loadSettingsFromStorage();
 
 // ===========================================================================
@@ -596,6 +601,7 @@ function updateLangButton() {
   const labels = { auto: '🌐 Auto', en: '🇬🇧 English', ru: '🇷🇺 Русский' };
   btn.textContent = labels[settingsLanguage] || '🌐 Auto';
 }
+
 function applyLanguage() {
   document.querySelectorAll("[data-i18n]").forEach(el => {
     const k = el.dataset.i18n;
@@ -673,33 +679,99 @@ async function updateSaveButtonsAvailability() {
 // ===========================================================================
 //  Minimap init
 // ===========================================================================
-let isDraggingMinimap = false;
-let isResizingMinimap = false;
-let dragStartX = 0, dragStartY = 0, dragMoved = false;
-
 const minimapWrap = document.getElementById("minimap-wrap");
 const minimapCanvas = document.getElementById("minimap-canvas");
 const minimapCtx = minimapCanvas.getContext("2d");
 const minimapGrip = document.getElementById("minimap-grip");
 
-minimapCanvas.width = minimapSize;
-minimapCanvas.height = minimapSize;
-minimapWrap.style.width = minimapSize + "px";
-minimapWrap.style.height = minimapSize + "px";
-
-if (minimapPosValid) {
-  const keepVisible = Math.max(40, minimapSize * 0.5);
-  const minX = -(minimapSize - keepVisible);
-  const maxX = window.innerWidth - keepVisible;
-  const minY = -(minimapSize - keepVisible);
-  const maxY = window.innerHeight - keepVisible;
-  minimapX = Math.max(minX, Math.min(maxX, minimapX));
-  minimapY = Math.max(minY, Math.min(maxY, minimapY));
-  minimapWrap.style.right = "auto";
-  minimapWrap.style.left = minimapX + "px";
-  minimapWrap.style.top = minimapY + "px";
+// Зонд для чтения safe-area (вырезы/чёлки, viewport-fit=cover)
+const mmSafeProbe = document.createElement("div");
+mmSafeProbe.style.cssText = "position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none;" +
+  "padding-left:env(safe-area-inset-left);padding-top:env(safe-area-inset-top);" +
+  "padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom);";
+document.body.appendChild(mmSafeProbe);
+let mmSafeInsets = { left:0, top:0, right:0, bottom:0 };
+function refreshMinimapSafeInsets() {
+  const cs = getComputedStyle(mmSafeProbe);
+  mmSafeInsets = {
+    left: parseFloat(cs.paddingLeft) || 0,
+    top: parseFloat(cs.paddingTop) || 0,
+    right: parseFloat(cs.paddingRight) || 0,
+    bottom: parseFloat(cs.paddingBottom) || 0
+  };
 }
+
+function getMinimapBounds() {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const mL = 18 + mmSafeInsets.left;
+  const mR = 18 + mmSafeInsets.right;
+  const mT = 45 + mmSafeInsets.top;
+  const mB = 18 + mmSafeInsets.bottom;
+  const maxSize = Math.max(60, Math.min(300, vw - mL - mR, vh - mT - mB));
+  return { vw, vh, mL, mR, mT, mB, maxSize };
+}
+
+function minimapFractionsFromPixel(left, top, size, b) {
+  const maxLeft = b.vw - size - b.mR;
+  const maxTop = b.vh - size - b.mB;
+  const spanX = Math.max(1e-6, maxLeft - b.mL);
+  const spanY = Math.max(1e-6, maxTop - b.mT);
+  return {
+    fx: Math.max(0, Math.min(1, (left - b.mL) / spanX)),
+    fy: Math.max(0, Math.min(1, (top - b.mT) / spanY))
+  };
+}
+
+// Единственная точка применения позиции/размера: всегда клампится в экран.
+function layoutMinimap() {
+  const b = getMinimapBounds();
+  minimapSize = Math.round(Math.max(60, Math.min(minimapSize, b.maxSize)));
+  if (minimapFx === null || minimapFy === null) { minimapFx = 1; minimapFy = 0; }
+  minimapFx = Math.max(0, Math.min(1, minimapFx));
+  minimapFy = Math.max(0, Math.min(1, minimapFy));
+  const maxLeft = b.vw - minimapSize - b.mR;
+  const maxTop = b.vh - minimapSize - b.mB;
+  const left = b.mL + minimapFx * Math.max(0, maxLeft - b.mL);
+  const top = b.mT + minimapFy * Math.max(0, maxTop - b.mT);
+  minimapWrap.style.right = "auto";
+  minimapWrap.style.left = left + "px";
+  minimapWrap.style.top = top + "px";
+  minimapWrap.style.width = minimapSize + "px";
+  minimapWrap.style.height = minimapSize + "px";
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const px = Math.max(1, Math.round(minimapSize * dpr));
+  if (minimapCanvas.width !== px || minimapCanvas.height !== px) {
+    minimapCanvas.width = px;
+    minimapCanvas.height = px;
+  }
+  minimapCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+refreshMinimapSafeInsets();
+// Миграция со старых пиксельных координат (могли быть отрицательными/за экраном)
+if ((minimapFx === null || minimapFy === null) && legacyMinimapX !== null && legacyMinimapY !== null) {
+  const b = getMinimapBounds();
+  const size = Math.max(60, Math.min(minimapSize, b.maxSize));
+  const f = minimapFractionsFromPixel(legacyMinimapX, legacyMinimapY, size, b);
+  minimapFx = f.fx; minimapFy = f.fy;
+}
+legacyMinimapX = null; legacyMinimapY = null;
+layoutMinimap();
 minimapWrap.style.display = minimapVisible ? "block" : "none";
+
+// Поворот экрана / изменение вьюпорта (адресная строка и т.п.) — перекладываем
+let mmLayoutRaf = 0;
+function queueMinimapLayout() {
+  if (mmLayoutRaf) return;
+  mmLayoutRaf = requestAnimationFrame(() => {
+    mmLayoutRaf = 0;
+    refreshMinimapSafeInsets();
+    layoutMinimap();
+  });
+}
+window.addEventListener("resize", queueMinimapLayout);
+window.addEventListener("orientationchange", queueMinimapLayout);
+if (window.visualViewport) window.visualViewport.addEventListener("resize", queueMinimapLayout);
 
 let mapOpen = false;
 let fullZoom = 1, fullPanX = 0, fullPanY = 0;
@@ -723,17 +795,7 @@ function closeFullscreenMap() {
   fullMapEl.classList.add("hidden");
   requestWakeLock();
 }
-window.addEventListener("resize", () => {
-  if (mapOpen) resizeFullscreenCanvas();
-  if (minimapPosValid) {
-    const keepVisible = Math.max(40, minimapSize * 0.5);
-    minimapX = Math.max(-(minimapSize - keepVisible), Math.min(window.innerWidth - keepVisible, minimapX));
-    minimapY = Math.max(-(minimapSize - keepVisible), Math.min(window.innerHeight - keepVisible, minimapY));
-    minimapWrap.style.right = "auto";
-    minimapWrap.style.left = minimapX + "px";
-    minimapWrap.style.top = minimapY + "px";
-  }
-});
+window.addEventListener("resize", () => { if (mapOpen) resizeFullscreenCanvas(); });
 
 // ===========================================================================
 //  Wake Lock
@@ -748,14 +810,10 @@ async function requestWakeLock() {
   } catch (err) { wakeLock = null; }
 }
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") {
-    saveSettingsToStorage();
-  } else if (document.visibilityState === "visible" && !overlayVisible && !menuVisible && !mapOpen && !infoModalOpen && !savesModalOpen) {
+  if (document.visibilityState === "visible" && !overlayVisible && !menuVisible && !mapOpen && !infoModalOpen && !savesModalOpen) {
     requestWakeLock();
   }
 });
-window.addEventListener("beforeunload", saveSettingsToStorage);
-window.addEventListener("pagehide", saveSettingsToStorage);
 
 // ===========================================================================
 //  Audio
@@ -1028,6 +1086,7 @@ function showFloatingText(wx, wy, wz, text, color, sx = 0, sy = 0) {
   const eye = { x: ball.x, y: BALL_R + camHeight, z: ball.z + CAM_BACK };
   const target = { x: ball.x, y: BALL_R, z: ball.z };
   const { v, p } = buildViewProj(eye, target, aspect);
+
   const vv = [
     v[0]*wx + v[4]*wy + v[8]*wz + v[12],
     v[1]*wx + v[5]*wy + v[9]*wz + v[13],
@@ -1041,12 +1100,15 @@ function showFloatingText(wx, wy, wz, text, color, sx = 0, sy = 0) {
     p[3]*vv[0] + p[7]*vv[1] + p[11]*vv[2] + p[15]*vv[3]
   ];
   if (pv[3] <= 0) return;
+
   const rawX = (pv[0] / pv[3] * 0.5 + 0.5) * window.innerWidth + sx;
   const rawY = (-pv[1] / pv[3] * 0.5 + 0.5) * window.innerHeight + sy;
+
   const padX = Math.max(110, Math.min(window.innerWidth, window.innerHeight) * 0.2);
   const padY = 70;
   const screenX = Math.max(padX, Math.min(window.innerWidth - padX, rawX));
   const screenY = Math.max(padY, Math.min(window.innerHeight - padY, rawY));
+
   const el = document.createElement("div");
   el.textContent = text;
   el.style.position = "fixed";
@@ -1062,6 +1124,7 @@ function showFloatingText(wx, wy, wz, text, color, sx = 0, sy = 0) {
   el.style.whiteSpace = "nowrap";
   el.style.transform = "translate(-50%, -50%)";
   el.style.transition = "transform 5s ease-out, opacity 5s ease-out";
+
   document.body.appendChild(el);
   el.offsetHeight;
   el.style.transform = "translate(-50%, -200%)";
@@ -1166,6 +1229,7 @@ function collidesAt(bx, bz) {
   }
   return false;
 }
+
 function addScore(amount) {
   score += amount;
   document.getElementById("score").textContent = score;
@@ -1181,6 +1245,7 @@ function updateChargeUI() {
     el.classList.add("hidden");
   }
 }
+
 function breakWall(x, z) {
   const key = `${x},${z}`;
   if (destroyedWalls.has(key)) return;
@@ -1260,6 +1325,7 @@ function breakWall(x, z) {
   }
   spawnBreakParticles(x, z, isMine);
 }
+
 function checkWallBreak() {
   const R = BALL_R + 0.06;
   const cx = Math.floor(ball.x / CELL);
@@ -1283,6 +1349,7 @@ function checkWallBreak() {
   }
   if (found) breakWall(bestWx, bestWz);
 }
+
 function stepBall(dt) {
   checkWallBreak();
   for (let i = bonusOrbs.length - 1; i >= 0; i--) {
@@ -1584,7 +1651,7 @@ function updateBiomeTex(ballX, ballZ) {
 }
 
 // ===========================================================================
-//  WGSL
+//  WGSL — с исправленными фигурными скобками в sevenSegCount
 // ===========================================================================
 const WGSL = `
 struct Globals {
@@ -2482,6 +2549,7 @@ async function startNewGame() {
   await requestPermissionsAndStart();
   hideOverlay();
 }
+
 async function continueLatest() {
   const saves = await dbAll();
   if (saves.length === 0) return;
@@ -2516,17 +2584,21 @@ canvas.addEventListener("pointerdown", () => {
     }
   }, 600);
 });
+
 function cancelPress(){
   if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
   pressActive = false;
 }
+
 canvas.addEventListener("pointerup", (e) => {
   const wasTap = pressActive && !pressFired;
   cancelPress();
   if (!wasTap) return;
   if (overlayVisible || menuVisible || gameOver || infoModalOpen || savesModalOpen) return;
+
   const bottomZoneTop = window.innerHeight * (1 - BOTTOM_ZONE_FRAC);
   const isBottomZone = e.clientY > bottomZoneTop;
+
   if (!isBottomZone && inversionCharges > 0) {
     isInverted = !isInverted;
     invertFlash = 1.0;
@@ -2539,6 +2611,7 @@ canvas.addEventListener("pointerup", (e) => {
     lastTapTime = 0;
     return;
   }
+
   const now = performance.now();
   if (now - lastTapTime < DOUBLE_TAP_MS) {
     recalibrateTilt();
@@ -2613,84 +2686,112 @@ updateHp(false);
 updateChargeUI();
 
 // ===========================================================================
-//  Minimap interaction
+//  Minimap interaction (drag / resize / tap, touch-safe)
 // ===========================================================================
-minimapWrap.addEventListener("pointerdown", e => {
-  e.stopPropagation();
-  isDraggingMinimap = true;
-  dragStartX = e.clientX;
-  dragStartY = e.clientY;
-  dragMoved = false;
-  const rect = minimapWrap.getBoundingClientRect();
-  minimapX = rect.left;
-  minimapY = rect.top;
-  minimapPosValid = true;
-  minimapWrap.style.right = "auto";
-  minimapWrap.style.top = minimapY + "px";
-  minimapWrap.style.left = minimapX + "px";
-  try { minimapWrap.setPointerCapture(e.pointerId); } catch(_) {}
+let mmDrag = null;    // { id, grabX, grabY, startX, startY, startT, moved }
+let mmResize = null;  // { id, startX, startY, startSize }
+let mmSaveTimer = null;
+
+function scheduleMinimapSave() {
+  if (mmSaveTimer) clearTimeout(mmSaveTimer);
+  mmSaveTimer = setTimeout(() => { mmSaveTimer = null; saveSettingsToStorage(); }, 250);
+}
+function flushMinimapSave() {
+  if (mmSaveTimer) { clearTimeout(mmSaveTimer); mmSaveTimer = null; }
   saveSettingsToStorage();
+}
+// Страховка: мобильный браузер может убить страницу без pointerup
+window.addEventListener("pagehide", flushMinimapSave);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") flushMinimapSave();
+});
+
+minimapWrap.addEventListener("pointerdown", e => {
+  e.preventDefault();
+  e.stopPropagation();
+  if (mmDrag || mmResize) return; // игнорируем лишние пальцы
+  const rect = minimapWrap.getBoundingClientRect();
+  mmDrag = {
+    id: e.pointerId,
+    grabX: e.clientX - rect.left,
+    grabY: e.clientY - rect.top,
+    startX: e.clientX, startY: e.clientY,
+    startT: performance.now(),
+    moved: false
+  };
+  try { minimapWrap.setPointerCapture(e.pointerId); } catch(_) {}
 });
 minimapWrap.addEventListener("pointermove", e => {
-  if (!isDraggingMinimap) return;
-  const dx = e.clientX - dragStartX;
-  const dy = e.clientY - dragStartY;
-  if (dx*dx + dy*dy > 9) dragMoved = true;
-  if (dragMoved) {
-    minimapX += dx;
-    minimapY += dy;
-    minimapWrap.style.left = minimapX + "px";
-    minimapWrap.style.top = minimapY + "px";
-    dragStartX = e.clientX;
-    dragStartY = e.clientY;
-    const now = performance.now();
-    if (now - lastSaveTime > 200) {
-      saveSettingsToStorage();
-      lastSaveTime = now;
-    }
+  if (!mmDrag || e.pointerId !== mmDrag.id) return;
+  e.preventDefault();
+  if (!mmDrag.moved) {
+    if (Math.abs(e.clientX - mmDrag.startX) < 6 && Math.abs(e.clientY - mmDrag.startY) < 6) return;
+    mmDrag.moved = true;
   }
+  const b = getMinimapBounds();
+  const maxLeft = b.vw - minimapSize - b.mR;
+  const maxTop = b.vh - minimapSize - b.mB;
+  const left = Math.max(b.mL, Math.min(maxLeft, e.clientX - mmDrag.grabX));
+  const top = Math.max(b.mT, Math.min(maxTop, e.clientY - mmDrag.grabY));
+  minimapWrap.style.left = left + "px";
+  minimapWrap.style.top = top + "px";
+  const f = minimapFractionsFromPixel(left, top, minimapSize, b);
+  minimapFx = f.fx; minimapFy = f.fy;
+  scheduleMinimapSave();
 });
-minimapWrap.addEventListener("pointerup", e => {
-  isDraggingMinimap = false;
-  try { minimapWrap.releasePointerCapture(e.pointerId); } catch(_) {}
-  saveSettingsToStorage();
-  if (!dragMoved) openFullscreenMap();
-});
-minimapWrap.addEventListener("pointercancel", e => {
-  isDraggingMinimap = false;
-  try { minimapWrap.releasePointerCapture(e.pointerId); } catch(_) {}
-  saveSettingsToStorage();
-});
+function endMinimapDrag(e, allowTap) {
+  if (!mmDrag || e.pointerId !== mmDrag.id) return;
+  const d = mmDrag;
+  mmDrag = null;
+  try { minimapWrap.releasePointerCapture(d.id); } catch(_) {}
+  if (d.moved) {
+    layoutMinimap();
+    flushMinimapSave();
+  } else if (allowTap && performance.now() - d.startT < 350) {
+    openFullscreenMap();
+  }
+}
+minimapWrap.addEventListener("pointerup", e => { e.stopPropagation(); endMinimapDrag(e, true); });
+minimapWrap.addEventListener("pointercancel", e => { e.stopPropagation(); endMinimapDrag(e, false); });
+minimapWrap.addEventListener("lostpointercapture", e => endMinimapDrag(e, false));
+
 minimapGrip.addEventListener("pointerdown", e => {
+  e.preventDefault();
   e.stopPropagation();
-  isResizingMinimap = true;
-  dragStartX = e.clientX;
-  dragStartY = e.clientY;
+  if (mmDrag || mmResize) return;
+  mmResize = { id: e.pointerId, startX: e.clientX, startY: e.clientY, startSize: minimapSize };
   try { minimapGrip.setPointerCapture(e.pointerId); } catch(_) {}
 });
 minimapGrip.addEventListener("pointermove", e => {
-  if (!isResizingMinimap) return;
-  const dx = e.clientX - dragStartX;
-  const dy = e.clientY - dragStartY;
-  const delta = Math.max(dx, dy);
-  minimapSize = Math.max(80, Math.min(300, minimapSize + delta));
-  minimapCanvas.width = minimapSize;
-  minimapCanvas.height = minimapSize;
-  minimapWrap.style.width = minimapSize + "px";
-  minimapWrap.style.height = minimapSize + "px";
-  dragStartX = e.clientX;
-  dragStartY = e.clientY;
+  if (!mmResize || e.pointerId !== mmResize.id) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const b = getMinimapBounds();
+  const delta = Math.max(e.clientX - mmResize.startX, e.clientY - mmResize.startY);
+  const newSize = Math.round(Math.min(b.maxSize, Math.max(80, mmResize.startSize + delta)));
+  if (newSize === minimapSize) return;
+  const rect = minimapWrap.getBoundingClientRect();
+  minimapSize = newSize;
+  const maxLeft = b.vw - minimapSize - b.mR;
+  const maxTop = b.vh - minimapSize - b.mB;
+  const left = Math.max(b.mL, Math.min(maxLeft, rect.left));
+  const top = Math.max(b.mT, Math.min(maxTop, rect.top));
+  const f = minimapFractionsFromPixel(left, top, minimapSize, b);
+  minimapFx = f.fx; minimapFy = f.fy;
+  layoutMinimap();
+  scheduleMinimapSave();
 });
-minimapGrip.addEventListener("pointerup", e => {
-  isResizingMinimap = false;
-  try { minimapGrip.releasePointerCapture(e.pointerId); } catch(_) {}
-  saveSettingsToStorage();
-});
-minimapGrip.addEventListener("pointercancel", e => {
-  isResizingMinimap = false;
-  try { minimapGrip.releasePointerCapture(e.pointerId); } catch(_) {}
-  saveSettingsToStorage();
-});
+function endMinimapResize(e) {
+  if (!mmResize || e.pointerId !== mmResize.id) return;
+  const r = mmResize;
+  mmResize = null;
+  try { minimapGrip.releasePointerCapture(r.id); } catch(_) {}
+  layoutMinimap();
+  flushMinimapSave();
+}
+minimapGrip.addEventListener("pointerup", e => { e.preventDefault(); e.stopPropagation(); endMinimapResize(e); });
+minimapGrip.addEventListener("pointercancel", e => { e.stopPropagation(); endMinimapResize(e); });
+minimapGrip.addEventListener("lostpointercapture", e => endMinimapResize(e));
 
 // ===========================================================================
 //  Fullscreen map
@@ -2836,7 +2937,7 @@ function frame(now){
   buildParticleInstances();
   if (particleCount > 0) device.queue.writeBuffer(particleBuf,0,particleData.subarray(0,particleCount*12));
   buildCrystalInstances();
-  if (crystalCount > 0) device.queue.writeBuffer(crystalInstBuf, 0, crystalInstData.subarray(0, crystalCount*12));
+  if (crystalCount > 0) device.queue.writeBuffer(crystalInstBuf, 0, crystalInstData.subarray(0,crystalCount*12));
 
   const enc=device.createCommandEncoder();
   const pass=enc.beginRenderPass({
