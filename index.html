@@ -244,7 +244,7 @@ const T = {
     loadFailed: "Failed to load save",
   },
   ru: {
-    overlayIntro: "Управление наклоном телефона/мышкой\nЗажатие — Меню\nДвойной тап в нижней области - обнулить наклон",
+    overlayIntro: "Управление наклоном телефона/мышкой\nЗажатие — Меню\nДвойной тап в нижней области — обнулить наклон",
     overlayRules: "Найдя инверсионные заряды можно инвертировать шар — тапни в любом месте кроме нижней области\nГолубой шар уничтожает мины но получает урон от клеток без мин\nОсобые сияющие клетки можно разрушить лишь уничтожив все мины вокруг них, их уничтожение сохраняет прогресс",
     menu: "Меню",
     restart: "Заново (новый сид)",
@@ -405,7 +405,11 @@ function saveSettingsToStorage() {
   try {
     localStorage.setItem(MS_SETTINGS_KEY, JSON.stringify({
       sensX, sensY, invertX, invertY,
-      minimapVisible, minimapSize, minimapFx, minimapFy
+      minimapVisible,
+      // Во время ресайза пишем предпросмотровый размер — он попадёт в хранилище
+      // даже если мобильный браузер потеряет pointerup.
+      minimapSize: mmResize ? mmResize.curSize : minimapSize,
+      minimapFx, minimapFy
     }));
   } catch(e) { console.warn('Settings save failed', e); }
 }
@@ -416,6 +420,10 @@ let minimapSize = 140;
 // null = ещё не задана (дефолт: правый верхний угол).
 let minimapFx = null, minimapFy = null;
 let legacyMinimapX = null, legacyMinimapY = null;
+// Состояние жестов объявлено рано, чтобы saveSettingsToStorage мог читать mmResize.
+let mmDrag = null;
+let mmResize = null;
+let mmSaveTimer = null;
 loadSettingsFromStorage();
 
 // ===========================================================================
@@ -765,6 +773,8 @@ function queueMinimapLayout() {
   if (mmLayoutRaf) return;
   mmLayoutRaf = requestAnimationFrame(() => {
     mmLayoutRaf = 0;
+    // Не трогаем layout во время жеста ресайза — это может вызвать pointercancel.
+    if (mmResize) return;
     refreshMinimapSafeInsets();
     layoutMinimap();
   });
@@ -1652,7 +1662,7 @@ function updateBiomeTex(ballX, ballZ) {
 }
 
 // ===========================================================================
-//  WGSL — с исправленными фигурными скобками в sevenSegCount
+//  WGSL
 // ===========================================================================
 const WGSL = `
 struct Globals {
@@ -2378,7 +2388,7 @@ function buildViewProj(eye, target, aspect){
 }
 
 // ===========================================================================
-//  Minimap
+//  Minimap drawing
 // ===========================================================================
 function drawMapOnCanvas(ctx, width, height, centerCellX, centerCellZ, scale, panX, panY) {
   ctx.fillStyle = "#050b18";
@@ -2689,29 +2699,54 @@ updateChargeUI();
 // ===========================================================================
 //  Minimap interaction (drag / resize / tap, touch-safe)
 // ===========================================================================
-let mmDrag = null;    // { id, grabX, grabY, startX, startY, startT, moved }
-let mmResize = null;  // { id, startX, startY, startSize, curSize }
-let mmSaveTimer = null;
-
 function scheduleMinimapSave() {
   if (mmSaveTimer) clearTimeout(mmSaveTimer);
-  mmSaveTimer = setTimeout(() => { mmSaveTimer = null; saveSettingsToStorage(); }, 250);
+  mmSaveTimer = setTimeout(() => { mmSaveTimer = null; saveSettingsToStorage(); }, 200);
 }
 function flushMinimapSave() {
   if (mmResize) commitMinimapResize();
   if (mmSaveTimer) { clearTimeout(mmSaveTimer); mmSaveTimer = null; }
   saveSettingsToStorage();
 }
-// Страховка: мобильный браузер может убить страницу без pointerup
-window.addEventListener("pagehide", flushMinimapSave);
+function forceEndMinimapDrag() {
+  if (!mmDrag) return;
+  const d = mmDrag;
+  mmDrag = null;
+  try { minimapWrap.releasePointerCapture(d.id); } catch(_) {}
+  if (d.moved) layoutMinimap();
+}
+function finalizeMinimapGestures() {
+  forceEndMinimapDrag();
+  if (mmResize) commitMinimapResize();
+  flushMinimapSave();
+}
+// Если предыдущий жест потерял pointerup (частая беда мобильных браузеров) —
+// следующее касание/клик завершает его, а не залипает.
+window.addEventListener("pointerdown", () => {
+  if (mmDrag || mmResize) finalizeMinimapGestures();
+}, true);
+window.addEventListener("blur", finalizeMinimapGestures);
+window.addEventListener("pagehide", finalizeMinimapGestures);
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") flushMinimapSave();
+  if (document.visibilityState === "hidden") finalizeMinimapGestures();
 });
+// Запасной путь для тача: некоторые браузеры теряют pointerup, но всегда шлют touchend.
+function endMinimapResizeTouchFallback() {
+  if (mmResize && mmResize.pointerType !== "mouse") {
+    commitMinimapResize();
+    flushMinimapSave();
+  }
+}
+window.addEventListener("touchend", endMinimapResizeTouchFallback, { capture:true, passive:true });
+window.addEventListener("touchcancel", endMinimapResizeTouchFallback, { capture:true, passive:true });
+window.addEventListener("mouseup", () => {
+  if (mmResize) { commitMinimapResize(); flushMinimapSave(); }
+}, true);
 
 minimapWrap.addEventListener("pointerdown", e => {
   e.preventDefault();
   e.stopPropagation();
-  if (mmDrag || mmResize) return; // игнорируем лишние пальцы
+  if (mmDrag || mmResize) return; // ignore extra fingers
   const rect = minimapWrap.getBoundingClientRect();
   mmDrag = {
     id: e.pointerId,
@@ -2725,7 +2760,6 @@ minimapWrap.addEventListener("pointerdown", e => {
 });
 minimapWrap.addEventListener("pointermove", e => {
   if (!mmDrag || e.pointerId !== mmDrag.id) return;
-  // Кнопка мыши отпущена, а pointerup потерялся (например, вне окна) — завершаем
   if (e.pointerType === "mouse" && e.buttons === 0) { endMinimapDrag(e, false); return; }
   e.preventDefault();
   if (!mmDrag.moved) {
@@ -2755,27 +2789,23 @@ function endMinimapDrag(e, allowTap) {
     openFullscreenMap();
   }
 }
-// ВАЖНО: без stopPropagation — pointerup с грипа (ресайз) идёт через обёртку
-// вверх к window, и его нельзя «съедать» здесь.
 minimapWrap.addEventListener("pointerup", e => endMinimapDrag(e, true));
 minimapWrap.addEventListener("pointercancel", e => endMinimapDrag(e, false));
 minimapWrap.addEventListener("lostpointercapture", e => endMinimapDrag(e, false));
 
 // --- Resize ---
-// Во время жеста меняем ТОЛЬКО transform (предпросмотр), реальный layout не трогаем:
-// мобильные браузеры отменяют тач (pointercancel) при смене layout элемента под пальцем.
-// События слушаем на window в фазе ПЕРЕХВАТА (capture) — они срабатывают раньше
-// любых stopPropagation ниже по пути, поэтому завершение жеста не теряется.
+// Во время жеста меняем только transform (предпросмотр), реальный layout не трогаем.
+// Размер предпросмотра сразу пишется в localStorage, поэтому он сохраняется даже
+// если мобильный браузер не пришлёт pointerup.
 minimapGrip.addEventListener("pointerdown", e => {
   e.preventDefault();
   e.stopPropagation();
   if (mmDrag || mmResize) return;
-  mmResize = { id: e.pointerId, startX: e.clientX, startY: e.clientY, startSize: minimapSize, curSize: minimapSize };
+  mmResize = { id: e.pointerId, pointerType: e.pointerType || "mouse", startX: e.clientX, startY: e.clientY, startSize: minimapSize, curSize: minimapSize };
   try { minimapGrip.setPointerCapture(e.pointerId); } catch(_) {}
 });
 window.addEventListener("pointermove", e => {
   if (!mmResize || e.pointerId !== mmResize.id) return;
-  // Кнопка мыши отпущена, а pointerup потерялся — коммитим и завершаем ресайз
   if (e.pointerType === "mouse" && e.buttons === 0) { endMinimapResize(e); return; }
   e.preventDefault();
   const b = getMinimapBounds();
@@ -2785,6 +2815,7 @@ window.addEventListener("pointermove", e => {
   mmResize.curSize = newSize;
   minimapWrap.style.transformOrigin = "top left";
   minimapWrap.style.transform = "scale(" + (newSize / mmResize.startSize) + ")";
+  scheduleMinimapSave();
 }, { capture: true, passive: false });
 function commitMinimapResize() {
   if (!mmResize) return;
