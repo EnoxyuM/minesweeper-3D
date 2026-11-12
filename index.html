@@ -771,6 +771,7 @@ function queueMinimapLayout() {
 }
 window.addEventListener("resize", queueMinimapLayout);
 window.addEventListener("orientationchange", queueMinimapLayout);
+window.addEventListener("load", queueMinimapLayout);
 if (window.visualViewport) window.visualViewport.addEventListener("resize", queueMinimapLayout);
 
 let mapOpen = false;
@@ -2689,7 +2690,7 @@ updateChargeUI();
 //  Minimap interaction (drag / resize / tap, touch-safe)
 // ===========================================================================
 let mmDrag = null;    // { id, grabX, grabY, startX, startY, startT, moved }
-let mmResize = null;  // { id, startX, startY, startSize }
+let mmResize = null;  // { id, startX, startY, startSize, curSize }
 let mmSaveTimer = null;
 
 function scheduleMinimapSave() {
@@ -2697,6 +2698,7 @@ function scheduleMinimapSave() {
   mmSaveTimer = setTimeout(() => { mmSaveTimer = null; saveSettingsToStorage(); }, 250);
 }
 function flushMinimapSave() {
+  if (mmResize) commitMinimapResize();
   if (mmSaveTimer) { clearTimeout(mmSaveTimer); mmSaveTimer = null; }
   saveSettingsToStorage();
 }
@@ -2723,6 +2725,8 @@ minimapWrap.addEventListener("pointerdown", e => {
 });
 minimapWrap.addEventListener("pointermove", e => {
   if (!mmDrag || e.pointerId !== mmDrag.id) return;
+  // Кнопка мыши отпущена, а pointerup потерялся (например, вне окна) — завершаем
+  if (e.pointerType === "mouse" && e.buttons === 0) { endMinimapDrag(e, false); return; }
   e.preventDefault();
   if (!mmDrag.moved) {
     if (Math.abs(e.clientX - mmDrag.startX) < 6 && Math.abs(e.clientY - mmDrag.startY) < 6) return;
@@ -2751,47 +2755,64 @@ function endMinimapDrag(e, allowTap) {
     openFullscreenMap();
   }
 }
-minimapWrap.addEventListener("pointerup", e => { e.stopPropagation(); endMinimapDrag(e, true); });
-minimapWrap.addEventListener("pointercancel", e => { e.stopPropagation(); endMinimapDrag(e, false); });
+// ВАЖНО: без stopPropagation — pointerup с грипа (ресайз) идёт через обёртку
+// вверх к window, и его нельзя «съедать» здесь.
+minimapWrap.addEventListener("pointerup", e => endMinimapDrag(e, true));
+minimapWrap.addEventListener("pointercancel", e => endMinimapDrag(e, false));
 minimapWrap.addEventListener("lostpointercapture", e => endMinimapDrag(e, false));
 
+// --- Resize ---
+// Во время жеста меняем ТОЛЬКО transform (предпросмотр), реальный layout не трогаем:
+// мобильные браузеры отменяют тач (pointercancel) при смене layout элемента под пальцем.
+// События слушаем на window в фазе ПЕРЕХВАТА (capture) — они срабатывают раньше
+// любых stopPropagation ниже по пути, поэтому завершение жеста не теряется.
 minimapGrip.addEventListener("pointerdown", e => {
   e.preventDefault();
   e.stopPropagation();
   if (mmDrag || mmResize) return;
-  mmResize = { id: e.pointerId, startX: e.clientX, startY: e.clientY, startSize: minimapSize };
+  mmResize = { id: e.pointerId, startX: e.clientX, startY: e.clientY, startSize: minimapSize, curSize: minimapSize };
   try { minimapGrip.setPointerCapture(e.pointerId); } catch(_) {}
 });
-minimapGrip.addEventListener("pointermove", e => {
+window.addEventListener("pointermove", e => {
   if (!mmResize || e.pointerId !== mmResize.id) return;
+  // Кнопка мыши отпущена, а pointerup потерялся — коммитим и завершаем ресайз
+  if (e.pointerType === "mouse" && e.buttons === 0) { endMinimapResize(e); return; }
   e.preventDefault();
-  e.stopPropagation();
   const b = getMinimapBounds();
   const delta = Math.max(e.clientX - mmResize.startX, e.clientY - mmResize.startY);
   const newSize = Math.round(Math.min(b.maxSize, Math.max(80, mmResize.startSize + delta)));
-  if (newSize === minimapSize) return;
-  const rect = minimapWrap.getBoundingClientRect();
-  minimapSize = newSize;
-  const maxLeft = b.vw - minimapSize - b.mR;
-  const maxTop = b.vh - minimapSize - b.mB;
-  const left = Math.max(b.mL, Math.min(maxLeft, rect.left));
-  const top = Math.max(b.mT, Math.min(maxTop, rect.top));
-  const f = minimapFractionsFromPixel(left, top, minimapSize, b);
-  minimapFx = f.fx; minimapFy = f.fy;
-  layoutMinimap();
-  scheduleMinimapSave();
-});
-function endMinimapResize(e) {
-  if (!mmResize || e.pointerId !== mmResize.id) return;
+  if (newSize === mmResize.curSize) return;
+  mmResize.curSize = newSize;
+  minimapWrap.style.transformOrigin = "top left";
+  minimapWrap.style.transform = "scale(" + (newSize / mmResize.startSize) + ")";
+}, { capture: true, passive: false });
+function commitMinimapResize() {
+  if (!mmResize) return;
   const r = mmResize;
   mmResize = null;
   try { minimapGrip.releasePointerCapture(r.id); } catch(_) {}
+  minimapWrap.style.transform = "";
+  if (r.curSize !== minimapSize) {
+    minimapSize = r.curSize;
+    const b = getMinimapBounds();
+    minimapSize = Math.round(Math.max(60, Math.min(minimapSize, b.maxSize)));
+    const rect = minimapWrap.getBoundingClientRect();
+    const maxLeft = b.vw - minimapSize - b.mR;
+    const maxTop = b.vh - minimapSize - b.mB;
+    const left = Math.max(b.mL, Math.min(maxLeft, rect.left));
+    const top = Math.max(b.mT, Math.min(maxTop, rect.top));
+    const f = minimapFractionsFromPixel(left, top, minimapSize, b);
+    minimapFx = f.fx; minimapFy = f.fy;
+  }
   layoutMinimap();
+}
+function endMinimapResize(e) {
+  if (!mmResize || e.pointerId !== mmResize.id) return;
+  commitMinimapResize();
   flushMinimapSave();
 }
-minimapGrip.addEventListener("pointerup", e => { e.preventDefault(); e.stopPropagation(); endMinimapResize(e); });
-minimapGrip.addEventListener("pointercancel", e => { e.stopPropagation(); endMinimapResize(e); });
-minimapGrip.addEventListener("lostpointercapture", e => endMinimapResize(e));
+window.addEventListener("pointerup", e => endMinimapResize(e), true);
+window.addEventListener("pointercancel", e => endMinimapResize(e), true);
 
 // ===========================================================================
 //  Fullscreen map
